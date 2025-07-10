@@ -1,0 +1,9 @@
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+}
+.custom-container {
+  padding: 20px;
+  background-color: #f8f9fa;
+  border-radius: 5px;
+}

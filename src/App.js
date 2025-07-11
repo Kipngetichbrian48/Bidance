@@ -12,7 +12,7 @@ function App() {
   const [coin, setCoin] = useState('');
   const [amount, setAmount] = useState('');
   const [price, setPrice] = useState('');
-  const [key, setKey] = useState('dashboard'); // Active tab
+  const [key, setKey] = useState('dashboard');
 
   // Handle form submission
   const handleSubmit = (e) => {
@@ -29,12 +29,19 @@ function App() {
     setPrice('');
   };
 
-  // Calculate wallet holdings
+  // Handle sell action
+  const handleSell = (id) => {
+    setTrades(trades.filter((trade) => trade.id !== id));
+  };
+
+  // Calculate wallet holdings and total value
   const walletHoldings = trades.reduce((acc, trade) => {
-    if (!acc[trade.coin]) acc[trade.coin] = 0;
-    acc[trade.coin] += trade.amount;
+    if (!acc[trade.coin]) acc[trade.coin] = { amount: 0, value: 0 };
+    acc[trade.coin].amount += trade.amount;
+    acc[trade.coin].value += trade.amount * trade.price;
     return acc;
   }, {});
+  const totalValue = Object.values(walletHoldings).reduce((sum, holding) => sum + holding.value, 0);
 
   return (
     <div className="App">
@@ -117,11 +124,19 @@ function App() {
           </Tab>
           <Tab eventKey="wallet" title="Wallet">
             <Card>
-              <Card.Header>Wallet Holdings</Card.Header>
+              <Card.Header>Wallet Holdings (Total Value: ${totalValue.toFixed(2)})</Card.Header>
               <ListGroup variant="flush">
-                {Object.entries(walletHoldings).map(([coin, amount]) => (
+                {Object.entries(walletHoldings).map(([coin, { amount, value }]) => (
                   <ListGroup.Item key={coin}>
-                    {coin}: {amount.toFixed(4)}
+                    {coin}: {amount.toFixed(4)} (Value: ${value.toFixed(2)})
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      className="ms-2"
+                      onClick={() => handleSell(trades.find(t => t.coin === coin).id)}
+                    >
+                      Sell
+                    </Button>
                   </ListGroup.Item>
                 ))}
               </ListGroup>

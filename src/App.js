@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import 'bootstrap/dist/css/bootstrap.min.css';
-import { Navbar, Nav, Container, Card, ListGroup, Form, Button, Tab, Tabs } from 'react-bootstrap';
+import { Navbar, Nav, Container, Card, ListGroup, Form, Button, Tab, Tabs, Alert } from 'react-bootstrap';
 
 function App() {
-  // State for balance, trades, and active tab
+  // State for balance, trades, active tab, form inputs, and alerts
   const [balance, setBalance] = useState(1500.75);
   const [trades, setTrades] = useState([
     { id: 1, coin: 'BTC', amount: 0.005, price: 65000 },
@@ -13,10 +13,16 @@ function App() {
   const [amount, setAmount] = useState('');
   const [price, setPrice] = useState('');
   const [key, setKey] = useState('dashboard');
+  const [alert, setAlert] = useState({ show: false, message: '', variant: 'success' });
 
-  // Handle form submission
+  // Handle form submission with validation
   const handleSubmit = (e) => {
     e.preventDefault();
+    if (!coin || !amount || !price || amount <= 0 || price <= 0) {
+      setAlert({ show: true, message: 'Please fill all fields with positive values.', variant: 'danger' });
+      setTimeout(() => setAlert({ show: false, message: '', variant: '' }), 3000);
+      return;
+    }
     const newTrade = {
       id: trades.length + 1,
       coin,
@@ -24,14 +30,23 @@ function App() {
       price: parseFloat(price),
     };
     setTrades([...trades, newTrade]);
+    setBalance(balance - (parseFloat(amount) * parseFloat(price)));
     setCoin('');
     setAmount('');
     setPrice('');
+    setAlert({ show: true, message: 'Trade added successfully!', variant: 'success' });
+    setTimeout(() => setAlert({ show: false, message: '', variant: '' }), 3000);
   };
 
-  // Handle sell action
+  // Handle sell action with balance update
   const handleSell = (id) => {
-    setTrades(trades.filter((trade) => trade.id !== id));
+    const tradeToSell = trades.find((t) => t.id === id);
+    if (tradeToSell) {
+      setTrades(trades.filter((t) => t.id !== id));
+      setBalance(balance + (tradeToSell.amount * tradeToSell.price));
+      setAlert({ show: true, message: `${tradeToSell.coin} sold successfully!`, variant: 'success' });
+      setTimeout(() => setAlert({ show: false, message: '', variant: '' }), 3000);
+    }
   };
 
   // Calculate wallet holdings and total value
@@ -42,6 +57,9 @@ function App() {
     return acc;
   }, {});
   const totalValue = Object.values(walletHoldings).reduce((sum, holding) => sum + holding.value, 0);
+
+  // Trade history (simplified as a log of recent trades)
+  const tradeHistory = trades.slice().reverse(); // Reverse to show latest first
 
   return (
     <div className="App">
@@ -54,11 +72,13 @@ function App() {
               <Nav.Link href="#home" onClick={() => setKey('dashboard')}>Home</Nav.Link>
               <Nav.Link href="#trade" onClick={() => setKey('trade')}>Trade</Nav.Link>
               <Nav.Link href="#wallet" onClick={() => setKey('wallet')}>Wallet</Nav.Link>
+              <Nav.Link href="#history" onClick={() => setKey('history')}>History</Nav.Link>
             </Nav>
           </Navbar.Collapse>
         </Container>
       </Navbar>
       <Container className="mt-4">
+        {alert.show && <Alert variant={alert.variant}>{alert.message}</Alert>}
         <Tabs activeKey={key} onSelect={(k) => setKey(k)} className="mb-3">
           <Tab eventKey="dashboard" title="Dashboard">
             <Card className="mb-4">
@@ -126,17 +146,34 @@ function App() {
             <Card>
               <Card.Header>Wallet Holdings (Total Value: ${totalValue.toFixed(2)})</Card.Header>
               <ListGroup variant="flush">
-                {Object.entries(walletHoldings).map(([coin, { amount, value }]) => (
-                  <ListGroup.Item key={coin}>
-                    {coin}: {amount.toFixed(4)} (Value: ${value.toFixed(2)})
-                    <Button
-                      variant="danger"
-                      size="sm"
-                      className="ms-2"
-                      onClick={() => handleSell(trades.find(t => t.coin === coin).id)}
-                    >
-                      Sell
-                    </Button>
+                {Object.entries(walletHoldings).map(([coin, { amount, value }]) => {
+                  const trade = trades.find((t) => t.coin === coin);
+                  return (
+                    <ListGroup.Item key={coin}>
+                      {coin}: {amount.toFixed(4)} (Value: ${value.toFixed(2)})
+                      {trade && (
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          className="ms-2"
+                          onClick={() => handleSell(trade.id)}
+                        >
+                          Sell
+                        </Button>
+                      )}
+                    </ListGroup.Item>
+                  );
+                })}
+              </ListGroup>
+            </Card>
+          </Tab>
+          <Tab eventKey="history" title="History">
+            <Card>
+              <Card.Header>Trade History</Card.Header>
+              <ListGroup variant="flush">
+                {tradeHistory.map((trade) => (
+                  <ListGroup.Item key={trade.id}>
+                    {trade.coin}: {trade.amount} @ ${trade.price.toFixed(2)} (ID: {trade.id})
                   </ListGroup.Item>
                 ))}
               </ListGroup>

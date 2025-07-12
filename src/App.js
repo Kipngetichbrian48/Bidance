@@ -23,6 +23,9 @@ function App() {
     ETH: 3500,
     LTC: 200
   });
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
 
   // Mock API for real-time price updates
   useEffect(() => {
@@ -35,6 +38,21 @@ function App() {
     }, 5000);
     return () => clearInterval(interval);
   }, []);
+
+  const handleLogin = e => {
+    e.preventDefault();
+    // Mock authentication (replace with real logic later)
+    if (username === 'user' && password === 'pass123') {
+      setIsAuthenticated(true);
+      setAlert({ type: 'success', message: 'Logged in successfully!' });
+      setTimeout(() => setAlert(null), 3000);
+      setUsername('');
+      setPassword('');
+    } else {
+      setAlert({ type: 'danger', message: 'Invalid credentials.' });
+      setTimeout(() => setAlert(null), 3000);
+    }
+  };
 
   const handleSubmit = e => {
     e.preventDefault();
@@ -77,18 +95,53 @@ function App() {
     acc[trade.coin].value += trade.amount * coinPrices[trade.coin];
     return acc;
   }, {});
+
   const totalValue = Object.values(walletHoldings).reduce((sum, h) => sum + h.value, 0);
 
+  // Prepare chart data with separate datasets per coin
+  const uniqueCoins = [...new Set(trades.map(trade => trade.coin))];
   const chartData = {
     labels: trades.map((_, index) => `Trade ${index + 1}`),
-    datasets: [{
-      label: 'Trade Values ($)',
-      data: trades.map(trade => trade.amount * coinPrices[trade.coin]),
-      borderColor: 'rgba(75, 192, 192, 1)',
-      backgroundColor: 'rgba(75, 192, 192, 0.2)',
+    datasets: uniqueCoins.map(coin => ({
+      label: `${coin} Value ($)`,
+      data: trades.map(trade => (trade.coin === coin ? trade.amount * coinPrices[trade.coin] : 0)),
+      borderColor: coin === 'BTC' ? 'rgba(255, 99, 132, 1)' : coin === 'ETH' ? 'rgba(54, 162, 235, 1)' : 'rgba(75, 192, 192, 1)',
+      backgroundColor: coin === 'BTC' ? 'rgba(255, 99, 132, 0.2)' : coin === 'ETH' ? 'rgba(54, 162, 235, 0.2)' : 'rgba(75, 192, 192, 0.2)',
       fill: false
-    }]
+    }))
   };
+
+  if (!isAuthenticated) {
+    return (
+      <Container className="mt-5">
+        <h2>Login to Bidance</h2>
+        {alert && <Alert variant={alert.type}>{alert.message}</Alert>}
+        <Form onSubmit={handleLogin}>
+          <Form.Group className="mb-3">
+            <Form.Label>Username</Form.Label>
+            <Form.Control
+              type="text"
+              value={username}
+              onChange={e => setUsername(e.target.value)}
+              placeholder="Enter username"
+            />
+          </Form.Group>
+          <Form.Group className="mb-3">
+            <Form.Label>Password</Form.Label>
+            <Form.Control
+              type="password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              placeholder="Enter password"
+            />
+          </Form.Group>
+          <Button variant="primary" type="submit">
+            Login
+          </Button>
+        </Form>
+      </Container>
+    );
+  }
 
   return (
     <div>
@@ -102,6 +155,9 @@ function App() {
             <Nav.Link eventKey="history">History</Nav.Link>
             <Nav.Link eventKey="chart">Chart</Nav.Link>
           </Nav>
+          <Button variant="outline-light" onClick={() => setIsAuthenticated(false)}>
+            Logout
+          </Button>
         </Container>
       </Navbar>
       <Container className="mt-4">

@@ -3,6 +3,9 @@ import { Navbar, Nav, Container, Form, Button, Alert, Tabs, Tab } from 'react-bo
 import { Line } from 'react-chartjs-2';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import { Chart as ChartJS, LineElement, PointElement, LinearScale, Title, CategoryScale, Tooltip, Legend } from 'chart.js';
+import { auth } from './firebase';
+import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import axios from 'axios';
 
 // Register Chart.js components
 ChartJS.register(LineElement, PointElement, LinearScale, Title, CategoryScale, Tooltip, Legend);
@@ -23,33 +26,75 @@ function App() {
     ETH: 3500,
     LTC: 200
   });
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [username, setUsername] = useState('');
+  const [user, setUser] = useState(null);
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
-  // Mock API for real-time price updates
+  // Fetch real-time prices from CoinGecko with retry logic
   useEffect(() => {
+    const fetchPrices = async (retryCount = 0, maxRetries = 3) => {
+      try {
+        const response = await axios.get(
+          'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,litecoin&vs_currencies=usd',
+          { timeout: 5000 } // 5-second timeout
+        );
+        setCoinPrices({
+          BTC: response.data.bitcoin.usd,
+          ETH: response.data.ethereum.usd,
+          LTC: response.data.litecoin.usd
+        });
+        setAlert(null); // Clear any previous error alerts
+      } catch (error) {
+        console.error('CoinGecko API Error:', error.response?.status, error.message);
+        if (error.response?.status === 429 && retryCount < maxRetries) {
+          // Retry after a delay for 429 errors
+          const delay = Math.pow(2, retryCount) * 1000; // Exponential backoff: 1s, 2s, 4s
+          console.log(`Rate limited, retrying after ${delay}ms...`);
+          setTimeout(() => fetchPrices(retryCount + 1, maxRetries), delay);
+        } else {
+          setAlert({ type: 'danger', message: `Failed to fetch prices from CoinGecko: ${error.message}` });
+          setTimeout(() => setAlert(null), 5000);
+        }
+      }
+    };
+
+    fetchPrices(); // Initial fetch
     const interval = setInterval(() => {
-      setCoinPrices(prevPrices => ({
-        BTC: prevPrices.BTC * (1 + (Math.random() - 0.5) * 0.02),
-        ETH: prevPrices.ETH * (1 + (Math.random() - 0.5) * 0.02),
-        LTC: prevPrices.LTC * (1 + (Math.random() - 0.5) * 0.02)
-      }));
-    }, 5000);
+      console.log('Fetching CoinGecko prices...'); // Debug log
+      fetchPrices();
+    }, 30000); // Update every 30 seconds
     return () => clearInterval(interval);
   }, []);
 
-  const handleLogin = e => {
+  // Check auth state
+  useEffect(() => {
+    const unsubscribe = auth.onAuthStateChanged(user => {
+      setUser(user);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleLogin = async e => {
     e.preventDefault();
-    // Mock authentication (replace with real logic later)
-    if (username === 'user' && password === 'pass123') {
-      setIsAuthenticated(true);
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
       setAlert({ type: 'success', message: 'Logged in successfully!' });
       setTimeout(() => setAlert(null), 3000);
-      setUsername('');
+      setEmail('');
       setPassword('');
-    } else {
-      setAlert({ type: 'danger', message: 'Invalid credentials.' });
+    } catch (error) {
+      setAlert({ type: 'danger', message: 'Invalid email or password.' });
+      setTimeout(() => setAlert(null), 3000);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setAlert({ type: 'success', message: 'Logged out successfully!' });
+      setTimeout(() => setAlert(null), 3000);
+    } catch (error) {
+      setAlert({ type: 'danger', message: 'Error logging out.' });
       setTimeout(() => setAlert(null), 3000);
     }
   };
@@ -80,29 +125,37 @@ function App() {
   const handleSell = (tradeId, coin, amount) => {
     const trade = trades.find(t => t.id === tradeId);
     if (trade) {
-      setBalance(balance + amount * coinPrices[coin]);
+      const currentPrice = coinPrices[coin];
+      setBalance(balance + amount * currentPrice);
       setTrades(trades.filter(t => t.id !== tradeId));
-      setAlert({ type: 'success', message: `Sold ${amount} ${coin} successfully!` });
+      setAlert({ type: 'success', message: `Sold ${amount} ${coin} for $${(amount * currentPrice).toFixed(2)}!` });
       setTimeout(() => setAlert(null), 3000);
     }
   };
 
   const walletHoldings = trades.reduce((acc, trade) => {
     if (!acc[trade.coin]) {
-      acc[trade.coin] = { amount: 0, value: 0 };
+      acc[trade.coin] = { amount: 0, value: 0, purchaseValue: 0, profitLoss: 0, profitLossPercent: 0 };
     }
     acc[trade.coin].amount += trade.amount;
     acc[trade.coin].value += trade.amount * coinPrices[trade.coin];
+    acc[trade.coin].purchaseValue += trade.amount * trade.price;
+    acc[trade.coin].profitLoss += trade.amount * (coinPrices[trade.coin] - trade.price);
+    acc[trade.coin].profitLossPercent = acc[trade.coin].purchaseValue
+      ? (acc[trade.coin].profitLoss / acc[trade.coin].purchaseValue) * 100
+      : 0;
     return acc;
   }, {});
 
   const totalValue = Object.values(walletHoldings).reduce((sum, h) => sum + h.value, 0);
+  const totalProfitLoss = Object.values(walletHoldings).reduce((sum, h) => sum + h.profitLoss, 0);
+  const totalProfitLossPercent = totalValue
+    ? (totalProfitLoss / Object.values(walletHoldings).reduce((sum, h) => sum + h.purchaseValue, 0)) * 100
+    : 0;
 
-  // Prepare chart data with separate datasets per coin
-  const uniqueCoins = [...new Set(trades.map(trade => trade.coin))];
   const chartData = {
     labels: trades.map((_, index) => `Trade ${index + 1}`),
-    datasets: uniqueCoins.map(coin => ({
+    datasets: [...new Set(trades.map(trade => trade.coin))].map(coin => ({
       label: `${coin} Value ($)`,
       data: trades.map(trade => (trade.coin === coin ? trade.amount * coinPrices[trade.coin] : 0)),
       borderColor: coin === 'BTC' ? 'rgba(255, 99, 132, 1)' : coin === 'ETH' ? 'rgba(54, 162, 235, 1)' : 'rgba(75, 192, 192, 1)',
@@ -111,19 +164,19 @@ function App() {
     }))
   };
 
-  if (!isAuthenticated) {
+  if (!user) {
     return (
       <Container className="mt-5">
         <h2>Login to Bidance</h2>
         {alert && <Alert variant={alert.type}>{alert.message}</Alert>}
         <Form onSubmit={handleLogin}>
           <Form.Group className="mb-3">
-            <Form.Label>Username</Form.Label>
+            <Form.Label>Email</Form.Label>
             <Form.Control
-              type="text"
-              value={username}
-              onChange={e => setUsername(e.target.value)}
-              placeholder="Enter username"
+              type="email"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              placeholder="Enter email"
             />
           </Form.Group>
           <Form.Group className="mb-3">
@@ -155,7 +208,7 @@ function App() {
             <Nav.Link eventKey="history">History</Nav.Link>
             <Nav.Link eventKey="chart">Chart</Nav.Link>
           </Nav>
-          <Button variant="outline-light" onClick={() => setIsAuthenticated(false)}>
+          <Button variant="outline-light" onClick={handleLogout}>
             Logout
           </Button>
         </Container>
@@ -210,11 +263,12 @@ function App() {
           </Tab>
           <Tab eventKey="wallet" title="Wallet">
             <h3>Total Value: ${totalValue.toFixed(2)}</h3>
+            <h4>Total Profit/Loss: ${totalProfitLoss.toFixed(2)} ({totalProfitLossPercent.toFixed(2)}%)</h4>
             <h4>Holdings</h4>
             <ul>
               {Object.entries(walletHoldings).map(([coin, holding]) => (
                 <li key={coin}>
-                  {coin}: {holding.amount.toFixed(6)} (Value: ${holding.value.toFixed(2)})
+                  {coin}: {holding.amount.toFixed(6)} (Value: ${holding.value.toFixed(2)}, P/L: ${holding.profitLoss.toFixed(2)} ({holding.profitLossPercent.toFixed(2)}%)
                   <Button
                     variant="danger"
                     size="sm"

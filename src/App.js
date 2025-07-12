@@ -1,183 +1,203 @@
 import { useState, useEffect } from 'react';
+import { Navbar, Nav, Container, Form, Button, Alert, Tabs, Tab } from 'react-bootstrap';
+import { Line } from 'react-chartjs-2';
 import 'bootstrap/dist/css/bootstrap.min.css';
-import { Navbar, Nav, Container, Card, ListGroup, Form, Button, Tab, Tabs, Alert } from 'react-bootstrap';
+import { Chart as ChartJS, LineElement, PointElement, LinearScale, Title, CategoryScale, Tooltip, Legend } from 'chart.js';
+
+// Register Chart.js components
+ChartJS.register(LineElement, PointElement, LinearScale, Title, CategoryScale, Tooltip, Legend);
 
 function App() {
-  // State for balance, trades, active tab, form inputs, and alerts
-  const [balance, setBalance] = useState(1500.75);
+  const [balance, setBalance] = useState(10000);
   const [trades, setTrades] = useState([
     { id: 1, coin: 'BTC', amount: 0.005, price: 65000 },
-    { id: 2, coin: 'ETH', amount: 0.1, price: 3500 },
+    { id: 2, coin: 'ETH', amount: 0.1, price: 3500 }
   ]);
   const [coin, setCoin] = useState('');
   const [amount, setAmount] = useState('');
   const [price, setPrice] = useState('');
+  const [alert, setAlert] = useState(null);
   const [key, setKey] = useState('dashboard');
-  const [alert, setAlert] = useState({ show: false, message: '', variant: 'success' });
+  const [coinPrices, setCoinPrices] = useState({
+    BTC: 65000,
+    ETH: 3500,
+    LTC: 200
+  });
 
-  // Handle form submission with validation
-  const handleSubmit = (e) => {
+  // Mock API for real-time price updates
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCoinPrices(prevPrices => ({
+        BTC: prevPrices.BTC * (1 + (Math.random() - 0.5) * 0.02),
+        ETH: prevPrices.ETH * (1 + (Math.random() - 0.5) * 0.02),
+        LTC: prevPrices.LTC * (1 + (Math.random() - 0.5) * 0.02)
+      }));
+    }, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleSubmit = e => {
     e.preventDefault();
     if (!coin || !amount || !price || amount <= 0 || price <= 0) {
-      setAlert({ show: true, message: 'Please fill all fields with positive values.', variant: 'danger' });
-      setTimeout(() => setAlert({ show: false, message: '', variant: '' }), 3000);
+      setAlert({ type: 'danger', message: 'Please fill all fields with valid values.' });
+      setTimeout(() => setAlert(null), 3000);
       return;
     }
-    const newTrade = {
-      id: trades.length + 1,
-      coin,
-      amount: parseFloat(amount),
-      price: parseFloat(price),
-    };
+    const cost = parseFloat(amount) * parseFloat(price);
+    if (cost > balance) {
+      setAlert({ type: 'danger', message: 'Insufficient balance.' });
+      setTimeout(() => setAlert(null), 3000);
+      return;
+    }
+    const newTrade = { id: trades.length + 1, coin, amount: parseFloat(amount), price: parseFloat(price) };
     setTrades([...trades, newTrade]);
-    setBalance(balance - (parseFloat(amount) * parseFloat(price)));
+    setBalance(balance - cost);
     setCoin('');
     setAmount('');
     setPrice('');
-    setAlert({ show: true, message: 'Trade added successfully!', variant: 'success' });
-    setTimeout(() => setAlert({ show: false, message: '', variant: '' }), 3000);
+    setAlert({ type: 'success', message: 'Trade added successfully!' });
+    setTimeout(() => setAlert(null), 3000);
   };
 
-  // Handle sell action with balance update
-  const handleSell = (id) => {
-    const tradeToSell = trades.find((t) => t.id === id);
-    if (tradeToSell) {
-      setTrades(trades.filter((t) => t.id !== id));
-      setBalance(balance + (tradeToSell.amount * tradeToSell.price));
-      setAlert({ show: true, message: `${tradeToSell.coin} sold successfully!`, variant: 'success' });
-      setTimeout(() => setAlert({ show: false, message: '', variant: '' }), 3000);
+  const handleSell = (tradeId, coin, amount) => {
+    const trade = trades.find(t => t.id === tradeId);
+    if (trade) {
+      setBalance(balance + amount * coinPrices[coin]);
+      setTrades(trades.filter(t => t.id !== tradeId));
+      setAlert({ type: 'success', message: `Sold ${amount} ${coin} successfully!` });
+      setTimeout(() => setAlert(null), 3000);
     }
   };
 
-  // Calculate wallet holdings and total value
   const walletHoldings = trades.reduce((acc, trade) => {
-    if (!acc[trade.coin]) acc[trade.coin] = { amount: 0, value: 0 };
+    if (!acc[trade.coin]) {
+      acc[trade.coin] = { amount: 0, value: 0 };
+    }
     acc[trade.coin].amount += trade.amount;
-    acc[trade.coin].value += trade.amount * trade.price;
+    acc[trade.coin].value += trade.amount * coinPrices[trade.coin];
     return acc;
   }, {});
-  const totalValue = Object.values(walletHoldings).reduce((sum, holding) => sum + holding.value, 0);
+  const totalValue = Object.values(walletHoldings).reduce((sum, h) => sum + h.value, 0);
 
-  // Trade history (simplified as a log of recent trades)
-  const tradeHistory = trades.slice().reverse(); // Reverse to show latest first
+  const chartData = {
+    labels: trades.map((_, index) => `Trade ${index + 1}`),
+    datasets: [{
+      label: 'Trade Values ($)',
+      data: trades.map(trade => trade.amount * coinPrices[trade.coin]),
+      borderColor: 'rgba(75, 192, 192, 1)',
+      backgroundColor: 'rgba(75, 192, 192, 0.2)',
+      fill: false
+    }]
+  };
 
   return (
-    <div className="App">
+    <div>
       <Navbar bg="dark" variant="dark" expand="lg">
         <Container>
-          <Navbar.Brand href="#home">Bidance</Navbar.Brand>
-          <Navbar.Toggle aria-controls="basic-navbar-nav" />
-          <Navbar.Collapse id="basic-navbar-nav">
-            <Nav className="me-auto">
-              <Nav.Link href="#home" onClick={() => setKey('dashboard')}>Home</Nav.Link>
-              <Nav.Link href="#trade" onClick={() => setKey('trade')}>Trade</Nav.Link>
-              <Nav.Link href="#wallet" onClick={() => setKey('wallet')}>Wallet</Nav.Link>
-              <Nav.Link href="#history" onClick={() => setKey('history')}>History</Nav.Link>
-            </Nav>
-          </Navbar.Collapse>
+          <Navbar.Brand>Bidance</Navbar.Brand>
+          <Nav className="me-auto" activeKey={key} onSelect={setKey}>
+            <Nav.Link eventKey="dashboard">Home</Nav.Link>
+            <Nav.Link eventKey="trade">Trade</Nav.Link>
+            <Nav.Link eventKey="wallet">Wallet</Nav.Link>
+            <Nav.Link eventKey="history">History</Nav.Link>
+            <Nav.Link eventKey="chart">Chart</Nav.Link>
+          </Nav>
         </Container>
       </Navbar>
       <Container className="mt-4">
-        {alert.show && <Alert variant={alert.variant}>{alert.message}</Alert>}
-        <Tabs activeKey={key} onSelect={(k) => setKey(k)} className="mb-3">
+        {alert && <Alert variant={alert.type}>{alert.message}</Alert>}
+        <Tabs activeKey={key} onSelect={setKey} className="mb-3">
           <Tab eventKey="dashboard" title="Dashboard">
-            <Card className="mb-4">
-              <Card.Header>Account Balance</Card.Header>
-              <Card.Body>
-                <Card.Text>Total: ${balance.toFixed(2)}</Card.Text>
-              </Card.Body>
-            </Card>
-            <Card>
-              <Card.Header>Recent Trades</Card.Header>
-              <ListGroup variant="flush">
-                {trades.map((trade) => (
-                  <ListGroup.Item key={trade.id}>
-                    {trade.coin}: {trade.amount} @ ${trade.price.toFixed(2)}
-                  </ListGroup.Item>
-                ))}
-              </ListGroup>
-            </Card>
+            <h3>Balance: ${balance.toFixed(2)}</h3>
+            <h4>Trades</h4>
+            <ul>
+              {trades.map(trade => (
+                <li key={trade.id}>
+                  {trade.amount} {trade.coin} @ ${trade.price.toFixed(2)}
+                </li>
+              ))}
+            </ul>
           </Tab>
           <Tab eventKey="trade" title="Trade">
-            <Card className="mt-4">
-              <Card.Header>Place a Trade</Card.Header>
-              <Card.Body>
-                <Form onSubmit={handleSubmit}>
-                  <Form.Group className="mb-3" controlId="formCoin">
-                    <Form.Label>Coin</Form.Label>
-                    <Form.Control
-                      type="text"
-                      value={coin}
-                      onChange={(e) => setCoin(e.target.value)}
-                      placeholder="Enter coin (e.g., BTC)"
-                      required
-                    />
-                  </Form.Group>
-                  <Form.Group className="mb-3" controlId="formAmount">
-                    <Form.Label>Amount</Form.Label>
-                    <Form.Control
-                      type="number"
-                      value={amount}
-                      onChange={(e) => setAmount(e.target.value)}
-                      placeholder="Enter amount"
-                      step="0.001"
-                      required
-                    />
-                  </Form.Group>
-                  <Form.Group className="mb-3" controlId="formPrice">
-                    <Form.Label>Price ($)</Form.Label>
-                    <Form.Control
-                      type="number"
-                      value={price}
-                      onChange={(e) => setPrice(e.target.value)}
-                      placeholder="Enter price"
-                      step="0.01"
-                      required
-                    />
-                  </Form.Group>
-                  <Button variant="primary" type="submit">
-                    Submit Trade
-                  </Button>
-                </Form>
-              </Card.Body>
-            </Card>
+            <Form onSubmit={handleSubmit}>
+              <Form.Group className="mb-3">
+                <Form.Label>Coin</Form.Label>
+                <Form.Control
+                  type="text"
+                  value={coin}
+                  onChange={e => setCoin(e.target.value.toUpperCase())}
+                  placeholder="e.g., BTC"
+                />
+              </Form.Group>
+              <Form.Group className="mb-3">
+                <Form.Label>Amount</Form.Label>
+                <Form.Control
+                  type="number"
+                  value={amount}
+                  onChange={e => setAmount(e.target.value)}
+                  placeholder="e.g., 0.01"
+                />
+              </Form.Group>
+              <Form.Group className="mb-3">
+                <Form.Label>Price ($)</Form.Label>
+                <Form.Control
+                  type="number"
+                  value={price}
+                  onChange={e => setPrice(e.target.value)}
+                  placeholder="e.g., 65000"
+                />
+              </Form.Group>
+              <Button variant="primary" type="submit">
+                Buy
+              </Button>
+            </Form>
           </Tab>
           <Tab eventKey="wallet" title="Wallet">
-            <Card>
-              <Card.Header>Wallet Holdings (Total Value: ${totalValue.toFixed(2)})</Card.Header>
-              <ListGroup variant="flush">
-                {Object.entries(walletHoldings).map(([coin, { amount, value }]) => {
-                  const trade = trades.find((t) => t.coin === coin);
-                  return (
-                    <ListGroup.Item key={coin}>
-                      {coin}: {amount.toFixed(4)} (Value: ${value.toFixed(2)})
-                      {trade && (
-                        <Button
-                          variant="danger"
-                          size="sm"
-                          className="ms-2"
-                          onClick={() => handleSell(trade.id)}
-                        >
-                          Sell
-                        </Button>
-                      )}
-                    </ListGroup.Item>
-                  );
-                })}
-              </ListGroup>
-            </Card>
+            <h3>Total Value: ${totalValue.toFixed(2)}</h3>
+            <h4>Holdings</h4>
+            <ul>
+              {Object.entries(walletHoldings).map(([coin, holding]) => (
+                <li key={coin}>
+                  {coin}: {holding.amount.toFixed(6)} (Value: ${holding.value.toFixed(2)})
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    className="ms-2"
+                    onClick={() => {
+                      const latestTrade = trades
+                        .filter(t => t.coin === coin)
+                        .slice(-1)[0];
+                      if (latestTrade) handleSell(latestTrade.id, coin, latestTrade.amount);
+                    }}
+                  >
+                    Sell
+                  </Button>
+                </li>
+              ))}
+            </ul>
           </Tab>
           <Tab eventKey="history" title="History">
-            <Card>
-              <Card.Header>Trade History</Card.Header>
-              <ListGroup variant="flush">
-                {tradeHistory.map((trade) => (
-                  <ListGroup.Item key={trade.id}>
-                    {trade.coin}: {trade.amount} @ ${trade.price.toFixed(2)} (ID: {trade.id})
-                  </ListGroup.Item>
-                ))}
-              </ListGroup>
-            </Card>
+            <h4>Trade History</h4>
+            <ul>
+              {trades.slice().reverse().map(trade => (
+                <li key={trade.id}>
+                  {trade.amount} {trade.coin} @ ${trade.price.toFixed(2)}
+                </li>
+              ))}
+            </ul>
+          </Tab>
+          <Tab eventKey="chart" title="Chart">
+            <h4>Trade Value Chart</h4>
+            <Line
+              data={chartData}
+              options={{
+                responsive: true,
+                scales: {
+                  x: { title: { display: true, text: 'Trade Number' } },
+                  y: { title: { display: true, text: 'Value ($)' } }
+                }
+              }}
+            />
           </Tab>
         </Tabs>
       </Container>

@@ -3,12 +3,14 @@ import { Navbar, Nav, Container, Form, Button, Alert, Tabs, Tab } from 'react-bo
 import { Line } from 'react-chartjs-2';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import { Chart as ChartJS, LineElement, PointElement, LinearScale, Title, CategoryScale, Tooltip, Legend } from 'chart.js';
+import zoomPlugin from 'chartjs-plugin-zoom';
+import axios from 'axios';
 import { auth, db } from './firebase';
 import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 
-// Register Chart.js components
-ChartJS.register(LineElement, PointElement, LinearScale, Title, CategoryScale, Tooltip, Legend);
+// Register Chart.js components and zoom plugin
+ChartJS.register(LineElement, PointElement, LinearScale, Title, CategoryScale, Tooltip, Legend, zoomPlugin);
 
 function App() {
   const [balance, setBalance] = useState(10000);
@@ -35,26 +37,38 @@ function App() {
     console.log('State updated:', { balance, trades, profitLossHistory, coinPrices, suggestions });
   }, [balance, trades, profitLossHistory, coinPrices, suggestions]);
 
-  // Mock CoinGecko prices and suggestions
+  // Fetch CoinGecko prices and suggestions via proxy
   useEffect(() => {
-    const useMockPrices = true;
     const fetchPrices = async () => {
-      if (useMockPrices) {
+      try {
+        const priceResponse = await axios.get('http://localhost:3000/api/price');
+        const prices = {
+          BTC: priceResponse.data.bitcoin.usd,
+          ETH: priceResponse.data.ethereum.usd,
+          LTC: priceResponse.data.litecoin.usd
+        };
+        console.log('Fetched prices from proxy:', prices);
+        setCoinPrices(prices);
+
+        const marketsResponse = await axios.get('http://localhost:3000/api/markets');
+        console.log('Fetched suggestions from proxy:', marketsResponse.data);
+        setSuggestions(marketsResponse.data);
+      } catch (error) {
+        console.error('Price/suggestions fetch error:', error.message);
+        setAlert({ type: 'danger', message: 'Failed to fetch prices or suggestions. Using mock data.' });
+        setTimeout(() => setAlert(null), 3000);
+        // Fallback to mock data
         const mockPrices = {
           BTC: 65000 + Math.random() * 1000,
           ETH: 3500 + Math.random() * 100,
           LTC: 200 + Math.random() * 10
         };
-        console.log('Using mock prices:', mockPrices);
         setCoinPrices(mockPrices);
-        // Mock trade suggestions
-        const mockSuggestions = [
+        setSuggestions([
           { coin: 'BTC', price_change_24h: 5.2 },
           { coin: 'ETH', price_change_24h: 3.1 },
           { coin: 'LTC', price_change_24h: -1.5 }
-        ];
-        console.log('Using mock suggestions:', mockSuggestions);
-        setSuggestions(mockSuggestions);
+        ]);
       }
     };
 
@@ -276,6 +290,71 @@ function App() {
     }]
   };
 
+  const chartOptions = {
+    responsive: true,
+    plugins: {
+      tooltip: {
+        enabled: true,
+        mode: 'index',
+        intersect: false,
+        callbacks: {
+          label: (context) => {
+            const datasetLabel = context.dataset.label || '';
+            const value = context.parsed.y;
+            return `${datasetLabel}: $${value.toFixed(2)}`;
+          }
+        }
+      },
+      zoom: {
+        zoom: {
+          wheel: { enabled: true },
+          pinch: { enabled: true },
+          mode: 'xy'
+        },
+        pan: {
+          enabled: true,
+          mode: 'xy'
+        }
+      }
+    },
+    scales: {
+      x: { title: { display: true, text: 'Trade Number' } },
+      y: { title: { display: true, text: 'Value ($)' } }
+    }
+  };
+
+  const profitLossChartOptions = {
+    responsive: true,
+    plugins: {
+      tooltip: {
+        enabled: true,
+        mode: 'index',
+        intersect: false,
+        callbacks: {
+          label: (context) => {
+            const value = context.parsed.y;
+            return `Profit/Loss: $${value.toFixed(2)}`;
+          }
+        }
+      },
+      zoom: {
+        zoom: {
+          wheel: { enabled: true },
+          pinch: { enabled: true },
+          mode: 'xy'
+        },
+        pan: {
+          enabled: true,
+          mode: 'xy'
+        }
+      }
+    },
+    scales: {
+      x: { title: { display: true, text: 'Time' } },
+      y: { title: { display: true, text: 'Profit/Loss ($)' } }
+    }
+  };
+
   if (!user) {
     return (
       <Container className="mt-5">
@@ -456,13 +535,7 @@ function App() {
             ) : (
               <Line
                 data={chartData}
-                options={{
-                  responsive: true,
-                  scales: {
-                    x: { title: { display: true, text: 'Trade Number' } },
-                    y: { title: { display: true, text: 'Value ($)' } }
-                  }
-                }}
+                options={chartOptions}
               />
             )}
           </Tab>
@@ -470,13 +543,7 @@ function App() {
             <h4>Profit/Loss Trend</h4>
             <Line
               data={profitLossChartData}
-              options={{
-                responsive: true,
-                scales: {
-                  x: { title: { display: true, text: 'Time' } },
-                  y: { title: { display: true, text: 'Profit/Loss ($)' } }
-                }
-              }}
+              options={profitLossChartOptions}
             />
           </Tab>
         </Tabs>

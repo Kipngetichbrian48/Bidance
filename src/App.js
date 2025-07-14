@@ -3,19 +3,17 @@ import { Navbar, Nav, Container, Form, Button, Alert, Tabs, Tab } from 'react-bo
 import { Line } from 'react-chartjs-2';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import { Chart as ChartJS, LineElement, PointElement, LinearScale, Title, CategoryScale, Tooltip, Legend } from 'chart.js';
-import { auth } from './firebase';
+import { auth, db } from './firebase';
 import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import axios from 'axios';
+import { doc, setDoc, getDoc } from 'firebase/firestore';
 
 // Register Chart.js components
 ChartJS.register(LineElement, PointElement, LinearScale, Title, CategoryScale, Tooltip, Legend);
 
 function App() {
   const [balance, setBalance] = useState(10000);
-  const [trades, setTrades] = useState([
-    { id: 1, coin: 'BTC', amount: 0.005, price: 65000 },
-    { id: 2, coin: 'ETH', amount: 0.1, price: 3500 }
-  ]);
+  const [trades, setTrades] = useState([]);
+  const [profitLossHistory, setProfitLossHistory] = useState([]);
   const [coin, setCoin] = useState('');
   const [amount, setAmount] = useState('');
   const [price, setPrice] = useState('');
@@ -29,50 +27,126 @@ function App() {
   const [user, setUser] = useState(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(true);
 
-  // Fetch real-time prices from CoinGecko with retry logic
+  // Log state changes for debugging
   useEffect(() => {
-    const fetchPrices = async (retryCount = 0, maxRetries = 3) => {
-      try {
-        const response = await axios.get(
-          'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,litecoin&vs_currencies=usd',
-          { timeout: 5000 } // 5-second timeout
-        );
-        setCoinPrices({
-          BTC: response.data.bitcoin.usd,
-          ETH: response.data.ethereum.usd,
-          LTC: response.data.litecoin.usd
-        });
-        setAlert(null); // Clear any previous error alerts
-      } catch (error) {
-        console.error('CoinGecko API Error:', error.response?.status, error.message);
-        if (error.response?.status === 429 && retryCount < maxRetries) {
-          // Retry after a delay for 429 errors
-          const delay = Math.pow(2, retryCount) * 1000; // Exponential backoff: 1s, 2s, 4s
-          console.log(`Rate limited, retrying after ${delay}ms...`);
-          setTimeout(() => fetchPrices(retryCount + 1, maxRetries), delay);
-        } else {
-          setAlert({ type: 'danger', message: `Failed to fetch prices from CoinGecko: ${error.message}` });
-          setTimeout(() => setAlert(null), 5000);
-        }
+    console.log('State updated:', { balance, trades, profitLossHistory, coinPrices });
+  }, [balance, trades, profitLossHistory, coinPrices]);
+
+  // Mock CoinGecko prices
+  useEffect(() => {
+    const useMockPrices = true;
+    const fetchPrices = async () => {
+      if (useMockPrices) {
+        const mockPrices = {
+          BTC: 65000 + Math.random() * 1000,
+          ETH: 3500 + Math.random() * 100,
+          LTC: 200 + Math.random() * 10
+        };
+        console.log('Using mock prices:', mockPrices);
+        setCoinPrices(mockPrices);
       }
     };
 
-    fetchPrices(); // Initial fetch
+    fetchPrices();
     const interval = setInterval(() => {
-      console.log('Fetching CoinGecko prices...'); // Debug log
+      console.log('Fetching prices...');
       fetchPrices();
-    }, 30000); // Update every 30 seconds
+    }, 120000);
     return () => clearInterval(interval);
   }, []);
 
-  // Check auth state
+  // Update profit/loss history when trades or prices change
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged(user => {
+    if (user && trades.length > 0) {
+      const totalProfitLoss = trades.reduce((sum, trade) => 
+        sum + trade.amount * ((coinPrices[trade.coin] || 0) - trade.price), 0);
+      const newHistory = [
+        ...profitLossHistory,
+        { timestamp: new Date().toISOString(), profitLoss: totalProfitLoss }
+      ].slice(-10);
+      setProfitLossHistory(newHistory);
+      console.log('Profit/loss history updated:', newHistory);
+      if (user) {
+        setDoc(doc(db, 'users', user.uid), { profitLossHistory: newHistory }, { merge: true })
+          .then(() => console.log('Profit/loss history saved to Firestore'))
+          .catch(error => console.error('Firestore save error for profitLossHistory:', error));
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trades, coinPrices, user]);
+
+  // Check auth state and load user data with retry
+  useEffect(() => {
+    const unsubscribe = auth.onAuthStateChanged(async user => {
       setUser(user);
+      if (user) {
+        try {
+          setLoading(true);
+          const userDocRef = doc(db, 'users', user.uid);
+          console.log('Fetching Firestore data for user:', user.uid);
+
+          // Retry fetch up to 3 times with delay
+          let attempts = 0;
+          let userDoc;
+          while (attempts < 3) {
+            await new Promise(resolve => setTimeout(resolve, 500)); // Delay for Firestore propagation
+            userDoc = await getDoc(userDocRef);
+            if (userDoc.exists()) {
+              break;
+            }
+            attempts++;
+            console.log(`Retry ${attempts}/3: No Firestore data found for user ${user.uid}`);
+          }
+
+          if (userDoc.exists()) {
+            const data = userDoc.data();
+            console.log('Firestore data loaded:', data);
+            setBalance(data.balance !== undefined ? data.balance : 10000);
+            setTrades(Array.isArray(data.trades) ? data.trades : []);
+            setProfitLossHistory(Array.isArray(data.profitLossHistory) ? data.profitLossHistory : []);
+          } else {
+            console.log('No Firestore data, initializing defaults');
+            const defaultData = { balance: 10000, trades: [], profitLossHistory: [] };
+            await setDoc(userDocRef, defaultData, { merge: true });
+            setBalance(defaultData.balance);
+            setTrades(defaultData.trades);
+            setProfitLossHistory(defaultData.profitLossHistory);
+          }
+        } catch (error) {
+          console.error('Firestore load error:', error);
+          setAlert({ type: 'danger', message: `Failed to load data: ${error.message}` });
+          setTimeout(() => setAlert(null), 5000);
+        } finally {
+          setLoading(false);
+        }
+      } else {
+        console.log('No user, clearing state');
+        setBalance(10000);
+        setTrades([]);
+        setProfitLossHistory([]);
+        setLoading(false);
+      }
     });
     return () => unsubscribe();
   }, []);
+
+  const saveUserData = async () => {
+    if (user) {
+      try {
+        const userDocRef = doc(db, 'users', user.uid);
+        const data = { balance, trades, profitLossHistory };
+        console.log('Saving to Firestore:', data);
+        await setDoc(userDocRef, data, { merge: true });
+        console.log('Firestore save successful');
+      } catch (error) {
+        console.error('Firestore save error:', error);
+        setAlert({ type: 'danger', message: `Failed to save data: ${error.message}` });
+        setTimeout(() => setAlert(null), 5000);
+      }
+    }
+  };
 
   const handleLogin = async e => {
     e.preventDefault();
@@ -90,19 +164,26 @@ function App() {
 
   const handleLogout = async () => {
     try {
+      await saveUserData(); // Ensure data is saved before logout
       await signOut(auth);
       setAlert({ type: 'success', message: 'Logged out successfully!' });
       setTimeout(() => setAlert(null), 3000);
     } catch (error) {
+      console.error('Logout error:', error);
       setAlert({ type: 'danger', message: 'Error logging out.' });
       setTimeout(() => setAlert(null), 3000);
     }
   };
 
-  const handleSubmit = e => {
+  const handleSubmit = async e => {
     e.preventDefault();
     if (!coin || !amount || !price || amount <= 0 || price <= 0) {
       setAlert({ type: 'danger', message: 'Please fill all fields with valid values.' });
+      setTimeout(() => setAlert(null), 3000);
+      return;
+    }
+    if (!['BTC', 'ETH', 'LTC'].includes(coin)) {
+      setAlert({ type: 'danger', message: 'Invalid coin. Use BTC, ETH, or LTC.' });
       setTimeout(() => setAlert(null), 3000);
       return;
     }
@@ -112,24 +193,32 @@ function App() {
       setTimeout(() => setAlert(null), 3000);
       return;
     }
-    const newTrade = { id: trades.length + 1, coin, amount: parseFloat(amount), price: parseFloat(price) };
-    setTrades([...trades, newTrade]);
-    setBalance(balance - cost);
+    const newTrade = { id: Date.now(), coin, amount: parseFloat(amount), price: parseFloat(price) };
+    const newTrades = [...trades, newTrade];
+    const newBalance = balance - cost;
+    console.log('Adding trade:', newTrade, 'New balance:', newBalance);
+    setTrades(newTrades);
+    setBalance(newBalance);
     setCoin('');
     setAmount('');
     setPrice('');
     setAlert({ type: 'success', message: 'Trade added successfully!' });
     setTimeout(() => setAlert(null), 3000);
+    await saveUserData();
   };
 
-  const handleSell = (tradeId, coin, amount) => {
+  const handleSell = async (tradeId, coin, amount) => {
     const trade = trades.find(t => t.id === tradeId);
     if (trade) {
-      const currentPrice = coinPrices[coin];
-      setBalance(balance + amount * currentPrice);
-      setTrades(trades.filter(t => t.id !== tradeId));
+      const currentPrice = coinPrices[coin] || 0;
+      const newBalance = balance + amount * currentPrice;
+      const newTrades = trades.filter(t => t.id !== tradeId);
+      console.log('Selling trade:', trade, 'New balance:', newBalance);
+      setBalance(newBalance);
+      setTrades(newTrades);
       setAlert({ type: 'success', message: `Sold ${amount} ${coin} for $${(amount * currentPrice).toFixed(2)}!` });
       setTimeout(() => setAlert(null), 3000);
+      await saveUserData();
     }
   };
 
@@ -138,9 +227,9 @@ function App() {
       acc[trade.coin] = { amount: 0, value: 0, purchaseValue: 0, profitLoss: 0, profitLossPercent: 0 };
     }
     acc[trade.coin].amount += trade.amount;
-    acc[trade.coin].value += trade.amount * coinPrices[trade.coin];
+    acc[trade.coin].value += trade.amount * (coinPrices[trade.coin] || 0);
     acc[trade.coin].purchaseValue += trade.amount * trade.price;
-    acc[trade.coin].profitLoss += trade.amount * (coinPrices[trade.coin] - trade.price);
+    acc[trade.coin].profitLoss += trade.amount * ((coinPrices[trade.coin] || 0) - trade.price);
     acc[trade.coin].profitLossPercent = acc[trade.coin].purchaseValue
       ? (acc[trade.coin].profitLoss / acc[trade.coin].purchaseValue) * 100
       : 0;
@@ -154,14 +243,29 @@ function App() {
     : 0;
 
   const chartData = {
-    labels: trades.map((_, index) => `Trade ${index + 1}`),
+    labels: trades.length > 0 ? trades.map((_, index) => `Trade ${index + 1}`) : ['No Trades'],
     datasets: [...new Set(trades.map(trade => trade.coin))].map(coin => ({
       label: `${coin} Value ($)`,
-      data: trades.map(trade => (trade.coin === coin ? trade.amount * coinPrices[trade.coin] : 0)),
+      data: trades.length > 0 
+        ? trades.map(trade => (trade.coin === coin ? trade.amount * (coinPrices[trade.coin] || 0) : 0))
+        : [0],
       borderColor: coin === 'BTC' ? 'rgba(255, 99, 132, 1)' : coin === 'ETH' ? 'rgba(54, 162, 235, 1)' : 'rgba(75, 192, 192, 1)',
       backgroundColor: coin === 'BTC' ? 'rgba(255, 99, 132, 0.2)' : coin === 'ETH' ? 'rgba(54, 162, 235, 0.2)' : 'rgba(75, 192, 192, 0.2)',
       fill: false
     }))
+  };
+
+  const profitLossChartData = {
+    labels: profitLossHistory.length > 0 
+      ? profitLossHistory.map(entry => new Date(entry.timestamp).toLocaleTimeString()) 
+      : ['No Data'],
+    datasets: [{
+      label: 'Total Profit/Loss ($)',
+      data: profitLossHistory.length > 0 ? profitLossHistory.map(entry => entry.profitLoss) : [0],
+      borderColor: 'rgba(153, 102, 255, 1)',
+      backgroundColor: 'rgba(153, 102, 255, 0.2)',
+      fill: false
+    }]
   };
 
   if (!user) {
@@ -196,6 +300,14 @@ function App() {
     );
   }
 
+  if (loading) {
+    return (
+      <Container className="mt-5">
+        <h3>Loading data...</h3>
+      </Container>
+    );
+  }
+
   return (
     <div>
       <Navbar bg="dark" variant="dark" expand="lg">
@@ -207,6 +319,7 @@ function App() {
             <Nav.Link eventKey="wallet">Wallet</Nav.Link>
             <Nav.Link eventKey="history">History</Nav.Link>
             <Nav.Link eventKey="chart">Chart</Nav.Link>
+            <Nav.Link eventKey="analytics">Analytics</Nav.Link>
           </Nav>
           <Button variant="outline-light" onClick={handleLogout}>
             Logout
@@ -219,13 +332,17 @@ function App() {
           <Tab eventKey="dashboard" title="Dashboard">
             <h3>Balance: ${balance.toFixed(2)}</h3>
             <h4>Trades</h4>
-            <ul>
-              {trades.map(trade => (
-                <li key={trade.id}>
-                  {trade.amount} {trade.coin} @ ${trade.price.toFixed(2)}
-                </li>
-              ))}
-            </ul>
+            {trades.length === 0 ? (
+              <p>No trades yet.</p>
+            ) : (
+              <ul>
+                {trades.map(trade => (
+                  <li key={trade.id}>
+                    {trade.amount} {trade.coin} @ ${trade.price.toFixed(2)}
+                  </li>
+                ))}
+              </ul>
+            )}
           </Tab>
           <Tab eventKey="trade" title="Trade">
             <Form onSubmit={handleSubmit}>
@@ -265,46 +382,71 @@ function App() {
             <h3>Total Value: ${totalValue.toFixed(2)}</h3>
             <h4>Total Profit/Loss: ${totalProfitLoss.toFixed(2)} ({totalProfitLossPercent.toFixed(2)}%)</h4>
             <h4>Holdings</h4>
-            <ul>
-              {Object.entries(walletHoldings).map(([coin, holding]) => (
-                <li key={coin}>
-                  {coin}: {holding.amount.toFixed(6)} (Value: ${holding.value.toFixed(2)}, P/L: ${holding.profitLoss.toFixed(2)} ({holding.profitLossPercent.toFixed(2)}%)
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    className="ms-2"
-                    onClick={() => {
-                      const latestTrade = trades
-                        .filter(t => t.coin === coin)
-                        .slice(-1)[0];
-                      if (latestTrade) handleSell(latestTrade.id, coin, latestTrade.amount);
-                    }}
-                  >
-                    Sell
-                  </Button>
-                </li>
-              ))}
-            </ul>
+            {Object.keys(walletHoldings).length === 0 ? (
+              <p>No holdings yet.</p>
+            ) : (
+              <ul>
+                {Object.entries(walletHoldings).map(([coin, holding]) => (
+                  <li key={coin}>
+                    {coin}: {holding.amount.toFixed(6)} (Value: ${holding.value.toFixed(2)}, P/L: ${holding.profitLoss.toFixed(2)} ({holding.profitLossPercent.toFixed(2)}%)
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      className="ms-2"
+                      onClick={() => {
+                        const latestTrade = trades
+                          .filter(t => t.coin === coin)
+                          .slice(-1)[0];
+                        if (latestTrade) handleSell(latestTrade.id, coin, latestTrade.amount);
+                      }}
+                    >
+                      Sell
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </Tab>
           <Tab eventKey="history" title="History">
             <h4>Trade History</h4>
-            <ul>
-              {trades.slice().reverse().map(trade => (
-                <li key={trade.id}>
-                  {trade.amount} {trade.coin} @ ${trade.price.toFixed(2)}
-                </li>
-              ))}
-            </ul>
+            {trades.length === 0 ? (
+              <p>No trade history.</p>
+            ) : (
+              <ul>
+                {trades.slice().reverse().map(trade => (
+                  <li key={trade.id}>
+                    {trade.amount} {trade.coin} @ ${trade.price.toFixed(2)}
+                  </li>
+                ))}
+              </ul>
+            )}
           </Tab>
           <Tab eventKey="chart" title="Chart">
             <h4>Trade Value Chart</h4>
+            {trades.length === 0 ? (
+              <p>No trades to display.</p>
+            ) : (
+              <Line
+                data={chartData}
+                options={{
+                  responsive: true,
+                  scales: {
+                    x: { title: { display: true, text: 'Trade Number' } },
+                    y: { title: { display: true, text: 'Value ($)' } }
+                  }
+                }}
+              />
+            )}
+          </Tab>
+          <Tab eventKey="analytics" title="Analytics">
+            <h4>Profit/Loss Trend</h4>
             <Line
-              data={chartData}
+              data={profitLossChartData}
               options={{
                 responsive: true,
                 scales: {
-                  x: { title: { display: true, text: 'Trade Number' } },
-                  y: { title: { display: true, text: 'Value ($)' } }
+                  x: { title: { display: true, text: 'Time' } },
+                  y: { title: { display: true, text: 'Profit/Loss ($)' } }
                 }
               }}
             />

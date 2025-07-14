@@ -24,6 +24,7 @@ function App() {
     ETH: 3500,
     LTC: 200
   });
+  const [suggestions, setSuggestions] = useState([]);
   const [user, setUser] = useState(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -31,10 +32,10 @@ function App() {
 
   // Log state changes for debugging
   useEffect(() => {
-    console.log('State updated:', { balance, trades, profitLossHistory, coinPrices });
-  }, [balance, trades, profitLossHistory, coinPrices]);
+    console.log('State updated:', { balance, trades, profitLossHistory, coinPrices, suggestions });
+  }, [balance, trades, profitLossHistory, coinPrices, suggestions]);
 
-  // Mock CoinGecko prices
+  // Mock CoinGecko prices and suggestions
   useEffect(() => {
     const useMockPrices = true;
     const fetchPrices = async () => {
@@ -46,12 +47,20 @@ function App() {
         };
         console.log('Using mock prices:', mockPrices);
         setCoinPrices(mockPrices);
+        // Mock trade suggestions
+        const mockSuggestions = [
+          { coin: 'BTC', price_change_24h: 5.2 },
+          { coin: 'ETH', price_change_24h: 3.1 },
+          { coin: 'LTC', price_change_24h: -1.5 }
+        ];
+        console.log('Using mock suggestions:', mockSuggestions);
+        setSuggestions(mockSuggestions);
       }
     };
 
     fetchPrices();
     const interval = setInterval(() => {
-      console.log('Fetching prices...');
+      console.log('Fetching prices and suggestions...');
       fetchPrices();
     }, 120000);
     return () => clearInterval(interval);
@@ -86,12 +95,10 @@ function App() {
           setLoading(true);
           const userDocRef = doc(db, 'users', user.uid);
           console.log('Fetching Firestore data for user:', user.uid);
-
-          // Retry fetch up to 3 times with delay
           let attempts = 0;
           let userDoc;
           while (attempts < 3) {
-            await new Promise(resolve => setTimeout(resolve, 500)); // Delay for Firestore propagation
+            await new Promise(resolve => setTimeout(resolve, 500));
             userDoc = await getDoc(userDocRef);
             if (userDoc.exists()) {
               break;
@@ -126,6 +133,7 @@ function App() {
         setBalance(10000);
         setTrades([]);
         setProfitLossHistory([]);
+        setSuggestions([]);
         setLoading(false);
       }
     });
@@ -164,7 +172,7 @@ function App() {
 
   const handleLogout = async () => {
     try {
-      await saveUserData(); // Ensure data is saved before logout
+      await saveUserData();
       await signOut(auth);
       setAlert({ type: 'success', message: 'Logged out successfully!' });
       setTimeout(() => setAlert(null), 3000);
@@ -377,6 +385,26 @@ function App() {
                 Buy
               </Button>
             </Form>
+            <h4 className="mt-3">Trade Suggestions</h4>
+            {suggestions.length === 0 ? (
+              <p>No suggestions available.</p>
+            ) : (
+              <ul>
+                {suggestions.map(suggestion => (
+                  <li key={suggestion.coin}>
+                    {suggestion.coin}: 24h Change: {suggestion.price_change_24h.toFixed(2)}%
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="ms-2"
+                      onClick={() => setCoin(suggestion.coin)}
+                    >
+                      Select
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </Tab>
           <Tab eventKey="wallet" title="Wallet">
             <h3>Total Value: ${totalValue.toFixed(2)}</h3>

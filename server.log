@@ -1,0 +1,53 @@
+Proxy server running on port 3000
+Fetching prices from CoinGecko
+Fetching https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,litecoin,cardano,xrp&vs_currencies=usd (attempt 1/3)
+Fetching 7-day history for bitcoin from CoinGecko
+Fetching https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=7&interval=hourly (attempt 1/3)
+Fetched data from https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,litecoin,cardano,xrp&vs_currencies=usd: {"bitcoin":{"usd":115900},"cardano":{"usd":0.804684},"ethereum":{"usd":3720.99},"litecoin":{"usd":11...
+Fetched prices: {"bitcoin":{"usd":115900},"cardano":{"usd":0.804684},"ethereum":{"usd":3720.99},"litecoin":{"usd":11
+Fetch error for https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=7&interval=hourly (attempt 1/3): {
+  message: 'Request failed with status code 401',
+  status: 401,
+  data: {
+    status: {
+      timestamp: '2025-07-25T10:02:37.443+00:00',
+      error_code: 10005,
+      error_message: "interval=hourly is exclusive to Enterprise plan customers only. Contact for Enterprise plan enquiry: https://www.coingecko.com/en/api/pricing. Tips: you can retrieve hourly interval data automatically, as long as the 'days' value is between 2 to 90 days; you don't have to specify the interval parameter."
+    }
+  }
+}
+Fetching https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=7&interval=hourly (attempt 2/3)
+Fetch error for https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=7&interval=hourly (attempt 2/3): {
+  message: 'Request failed with status code 401',
+  status: 401,
+  data: {
+    status: {
+      timestamp: '2025-07-25T10:02:39.331+00:00',
+      error_code: 10005,
+      error_message: "interval=hourly is exclusive to Enterprise plan customers only. Contact for Enterprise plan enquiry: https://www.coingecko.com/en/api/pricing. Tips: you can retrieve hourly interval data automatically, as long as the 'days' value is between 2 to 90 days; you don't have to specify the interval parameter."
+    }
+  }
+}
+Fetching https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=7&interval=hourly (attempt 3/3)
+Fetch error for https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=7&interval=hourly (attempt 3/3): {
+  message: 'Request failed with status code 401',
+  status: 401,
+  data: {
+    status: {
+      timestamp: '2025-07-25T10:02:41.765+00:00',
+      error_code: 10005,
+      error_message: "interval=hourly is exclusive to Enterprise plan customers only. Contact for Enterprise plan enquiry: https://www.coingecko.com/en/api/pricing. Tips: you can retrieve hourly interval data automatically, as long as the 'days' value is between 2 to 90 days; you don't have to specify the interval parameter."
+    }
+  }
+}
+History fetch error for bitcoin: {
+  message: 'Request failed with status code 401',
+  status: 401,
+  data: {
+    status: {
+      timestamp: '2025-07-25T10:02:41.765+00:00',
+      error_code: 10005,
+      error_message: "interval=hourly is exclusive to Enterprise plan customers only. Contact for Enterprise plan enquiry: https://www.coingecko.com/en/api/pricing. Tips: you can retrieve hourly interval data automatically, as long as the 'days' value is between 2 to 90 days; you don't have to specify the interval parameter."
+    }
+  }
+}

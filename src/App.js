@@ -1,555 +1,843 @@
-import { useState, useEffect } from 'react';
-import { Navbar, Nav, Container, Form, Button, Alert, Tabs, Tab } from 'react-bootstrap';
-import { Line } from 'react-chartjs-2';
-import 'bootstrap/dist/css/bootstrap.min.css';
-import { Chart as ChartJS, LineElement, PointElement, LinearScale, Title, CategoryScale, Tooltip, Legend } from 'chart.js';
-import zoomPlugin from 'chartjs-plugin-zoom';
-import axios from 'axios';
+import React, { useState, useEffect, useRef, Component } from 'react';
 import { auth, db } from './firebase';
-import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { doc, setDoc, getDoc } from 'firebase/firestore';
+import {
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut,
+  multiFactor,
+  PhoneAuthProvider,
+  PhoneMultiFactorGenerator,
+  RecaptchaVerifier,
+} from 'firebase/auth';
+import { collection, addDoc, onSnapshot, query, where, doc, setDoc, getDoc } from 'firebase/firestore';
+import axios from 'axios';
+import { Chart as ChartJS, LineController, LineElement, PointElement, LinearScale, TimeScale, CategoryScale, Title, Tooltip, Legend, ArcElement } from 'chart.js';
+import { CandlestickController, CandlestickElement } from 'chartjs-chart-financial';
+import { Chart, Pie } from 'react-chartjs-2';
+import 'chartjs-adapter-date-fns';
+import { format } from 'date-fns';
+import ZoomPlugin from 'chartjs-plugin-zoom';
+import './App.css';
 
-// Register Chart.js components and zoom plugin
-ChartJS.register(LineElement, PointElement, LinearScale, Title, CategoryScale, Tooltip, Legend, zoomPlugin);
+ChartJS.register(LineController, LineElement, PointElement, LinearScale, TimeScale, CategoryScale, Title, Tooltip, Legend, ArcElement, ZoomPlugin, CandlestickController, CandlestickElement);
 
-function App() {
-  const [balance, setBalance] = useState(10000);
-  const [trades, setTrades] = useState([]);
-  const [profitLossHistory, setProfitLossHistory] = useState([]);
-  const [coin, setCoin] = useState('');
-  const [amount, setAmount] = useState('');
-  const [price, setPrice] = useState('');
-  const [alert, setAlert] = useState(null);
-  const [key, setKey] = useState('dashboard');
-  const [coinPrices, setCoinPrices] = useState({
-    BTC: 65000,
-    ETH: 3500,
-    LTC: 200
-  });
-  const [suggestions, setSuggestions] = useState([]);
+// Error Boundary Component
+class ErrorBoundary extends Component {
+  state = { hasError: false, error: null };
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return <p className="text-danger">Chart rendering failed: {this.state.error.message}</p>;
+    }
+    return this.props.children;
+  }
+}
+
+const App = () => {
   const [user, setUser] = useState(null);
+  const [prices, setPrices] = useState({});
+  const [chartData, setChartData] = useState(null);
+  const [chartError, setChartError] = useState('');
+  const [selectedAsset, setSelectedAsset] = useState('bitcoin');
+  const [selectedTimeRange, setSelectedTimeRange] = useState('7');
+  const [trades, setTrades] = useState([]);
+  const [tradeAmount, setTradeAmount] = useState('');
+  const [tradeType, setTradeType] = useState('buy');
+  const [orderType, setOrderType] = useState('market');
+  const [limitPrice, setLimitPrice] = useState('');
+  const [stopPrice, setStopPrice] = useState(''); // NEW: For stop-limit orders
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [phoneNumber, setPhoneNumber] = useState(''); // NEW: For 2FA
+  const [verificationCode, setVerificationCode] = useState(''); // NEW: For 2FA
+  const [verificationId, setVerificationId] = useState(''); // NEW: For 2FA
+  const [loginError, setLoginError] = useState('');
+  const [orderBook, setOrderBook] = useState({ bids: [], asks: [] });
+  const [depthData, setDepthData] = useState(null);
+  const [wallet, setWallet] = useState({}); // NEW: Wallet balances
+  const [kycStatus, setKycStatus] = useState('pending'); // NEW: KYC stub
+  const canvasRef = useRef(null);
+  const chartRef = useRef(null);
+  const wsRef = useRef(null); // NEW: WebSocket reference
+  const isMounted = useRef(true);
 
-  // Log state changes for debugging
+  // NEW: Initialize WebSocket for order book
   useEffect(() => {
-    console.log('State updated:', { balance, trades, profitLossHistory, coinPrices, suggestions });
-  }, [balance, trades, profitLossHistory, coinPrices, suggestions]);
+    wsRef.current = new WebSocket('ws://localhost:8080');
+    wsRef.current.onopen = () => console.log('WebSocket connected');
+    wsRef.current.onmessage = (event) => {
+      const { asset, orderBook } = JSON.parse(event.data);
+      if (asset === selectedAsset) {
+        setOrderBook(orderBook);
+        const bidData = orderBook.bids.map(bid => ({ x: parseFloat(bid.price), y: parseFloat(bid.amount) }));
+        const askData = orderBook.asks.map(ask => ({ x: parseFloat(ask.price), y: parseFloat(ask.amount) }));
+        setDepthData({
+          datasets: [
+            { label: 'Bids', data: bidData, borderColor: '#00ff00', backgroundColor: 'rgba(0, 255, 0, 0.3)', stepped: true, fill: true },
+            { label: 'Asks', data: askData, borderColor: '#ff0000', backgroundColor: 'rgba(255, 0, 0, 0.3)', stepped: true, fill: true },
+          ],
+        });
+      }
+    };
+    wsRef.current.onclose = () => console.log('WebSocket disconnected');
+    return () => wsRef.current.close();
+  }, [selectedAsset]);
 
-  // Fetch CoinGecko prices and suggestions via proxy
+  // Authentication, trades, wallet, and KYC initialization
   useEffect(() => {
+    isMounted.current = true;
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      console.log('Auth state changed:', currentUser ? currentUser.email : 'No user');
+      setUser(currentUser);
+      if (currentUser) {
+        // Fetch trades
+        const q = query(collection(db, 'trades'), where('userId', '==', currentUser.uid));
+        const unsubscribeTrades = onSnapshot(q, (snapshot) => {
+          const tradesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          console.log('Fetched trades from Firestore:', tradesData);
+          setTrades(tradesData);
+        });
+
+        // NEW: Fetch wallet
+        const walletRef = doc(db, 'wallets', currentUser.uid);
+        const walletSnap = await getDoc(walletRef);
+        if (walletSnap.exists()) {
+          setWallet(walletSnap.data());
+        } else {
+          const initialWallet = { usd: 10000, bitcoin: 0, ethereum: 0, litecoin: 0, ripple: 0, cardano: 0, solana: 0 };
+          await setDoc(walletRef, initialWallet);
+          setWallet(initialWallet);
+        }
+
+        // NEW: Fetch KYC status
+        const kycRef = doc(db, 'kyc', currentUser.uid);
+        const kycSnap = await getDoc(kycRef);
+        if (kycSnap.exists()) {
+          setKycStatus(kycSnap.data().status);
+        } else {
+          await setDoc(kycRef, { status: 'pending' });
+          setKycStatus('pending');
+        }
+
+        return () => unsubscribeTrades();
+      } else {
+        setTrades([]);
+        setWallet({});
+        setKycStatus('pending');
+      }
+    });
+
     const fetchPrices = async () => {
       try {
-        const priceResponse = await axios.get('http://localhost:3000/api/price');
-        const prices = {
-          BTC: priceResponse.data.bitcoin.usd,
-          ETH: priceResponse.data.ethereum.usd,
-          LTC: priceResponse.data.litecoin.usd
-        };
-        console.log('Fetched prices from proxy:', prices);
-        setCoinPrices(prices);
-
-        const marketsResponse = await axios.get('http://localhost:3000/api/markets');
-        console.log('Fetched suggestions from proxy:', marketsResponse.data);
-        setSuggestions(marketsResponse.data);
+        console.log('Fetching prices from server');
+        const response = await axios.get('http://localhost:3000/api/price');
+        console.log('Fetched prices:', JSON.stringify(response.data).slice(0, 100));
+        setPrices(response.data);
       } catch (error) {
-        console.error('Price/suggestions fetch error:', error.message);
-        setAlert({ type: 'danger', message: 'Failed to fetch prices or suggestions. Using mock data.' });
-        setTimeout(() => setAlert(null), 3000);
-        // Fallback to mock data
-        const mockPrices = {
-          BTC: 65000 + Math.random() * 1000,
-          ETH: 3500 + Math.random() * 100,
-          LTC: 200 + Math.random() * 10
-        };
-        setCoinPrices(mockPrices);
-        setSuggestions([
-          { coin: 'BTC', price_change_24h: 5.2 },
-          { coin: 'ETH', price_change_24h: 3.1 },
-          { coin: 'LTC', price_change_24h: -1.5 }
-        ]);
+        console.error('Error fetching prices:', error.message, error.response?.data);
       }
     };
 
     fetchPrices();
-    const interval = setInterval(() => {
-      console.log('Fetching prices and suggestions...');
-      fetchPrices();
-    }, 120000);
-    return () => clearInterval(interval);
+    const priceInterval = setInterval(fetchPrices, 5000);
+    return () => {
+      clearInterval(priceInterval);
+      isMounted.current = false;
+      unsubscribe();
+    };
   }, []);
 
-  // Update profit/loss history when trades or prices change
   useEffect(() => {
-    if (user && trades.length > 0) {
-      const totalProfitLoss = trades.reduce((sum, trade) => 
-        sum + trade.amount * ((coinPrices[trade.coin] || 0) - trade.price), 0);
-      const newHistory = [
-        ...profitLossHistory,
-        { timestamp: new Date().toISOString(), profitLoss: totalProfitLoss }
-      ].slice(-10);
-      setProfitLossHistory(newHistory);
-      console.log('Profit/loss history updated:', newHistory);
-      if (user) {
-        setDoc(doc(db, 'users', user.uid), { profitLossHistory: newHistory }, { merge: true })
-          .then(() => console.log('Profit/loss history saved to Firestore'))
-          .catch(error => console.error('Firestore save error for profitLossHistory:', error));
+    fetchChartData(selectedAsset, selectedTimeRange);
+    return () => {
+      if (chartRef.current && isMounted.current) {
+        console.log(`Destroying chart for ${selectedAsset}`);
+        chartRef.current.destroy();
+        chartRef.current = null;
+      }
+    };
+  }, [selectedAsset, selectedTimeRange]);
+
+  // REMOVED: Static order book/depth chart fetch (replaced by WebSocket)
+
+  const fetchChartData = async (asset, days) => {
+    try {
+      console.log(`Fetching OHLC data for ${asset}, ${days} days`);
+      const response = await axios.get(`http://localhost:3000/api/ohlc/${asset}/${days}`);
+      console.log(`Fetched OHLC data from http://localhost:3000/api/ohlc/${asset}/${days}:`, response.data);
+      const data = response.data.map(([timestamp, open, high, low, close]) => ({
+        x: timestamp,
+        o: open,
+        h: high,
+        l: low,
+        c: close,
+      }));
+      console.log(`Chart data for ${asset}: ${data.length} points`);
+
+      if (isMounted.current) {
+        setTimeout(() => {
+          setChartData({
+            datasets: [
+              {
+                label: `${asset.charAt(0).toUpperCase() + asset.slice(1)} Candlestick`,
+                data,
+                borderColor: '#f0b90b',
+                backgroundColor: (context) => {
+                  const { o, c } = context.raw || {};
+                  return c >= o ? '#00ff00' : '#ff0000';
+                },
+              },
+            ],
+          });
+          setChartError('');
+        }, 100);
+      }
+    } catch (error) {
+      console.error(`Error fetching OHLC data for ${asset}:`, error.message, error.response?.data);
+      if (isMounted.current) {
+        setChartData(null);
+        setChartError(`Failed to load chart for ${asset}: ${error.response?.data?.details || error.message}`);
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trades, coinPrices, user]);
+  };
 
-  // Check auth state and load user data with retry
-  useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged(async user => {
-      setUser(user);
-      if (user) {
-        try {
-          setLoading(true);
-          const userDocRef = doc(db, 'users', user.uid);
-          console.log('Fetching Firestore data for user:', user.uid);
-          let attempts = 0;
-          let userDoc;
-          while (attempts < 3) {
-            await new Promise(resolve => setTimeout(resolve, 500));
-            userDoc = await getDoc(userDocRef);
-            if (userDoc.exists()) {
-              break;
-            }
-            attempts++;
-            console.log(`Retry ${attempts}/3: No Firestore data found for user ${user.uid}`);
-          }
+  const handleAssetChange = (e) => {
+    const asset = e.target.value;
+    console.log(`Switching to asset: ${asset}`);
+    setSelectedAsset(asset);
+  };
 
-          if (userDoc.exists()) {
-            const data = userDoc.data();
-            console.log('Firestore data loaded:', data);
-            setBalance(data.balance !== undefined ? data.balance : 10000);
-            setTrades(Array.isArray(data.trades) ? data.trades : []);
-            setProfitLossHistory(Array.isArray(data.profitLossHistory) ? data.profitLossHistory : []);
-          } else {
-            console.log('No Firestore data, initializing defaults');
-            const defaultData = { balance: 10000, trades: [], profitLossHistory: [] };
-            await setDoc(userDocRef, defaultData, { merge: true });
-            setBalance(defaultData.balance);
-            setTrades(defaultData.trades);
-            setProfitLossHistory(defaultData.profitLossHistory);
-          }
-        } catch (error) {
-          console.error('Firestore load error:', error);
-          setAlert({ type: 'danger', message: `Failed to load data: ${error.message}` });
-          setTimeout(() => setAlert(null), 5000);
-        } finally {
-          setLoading(false);
-        }
+  const handleTimeRangeChange = (e) => {
+    const days = e.target.value;
+    console.log(`Switching to time range: ${days} days`);
+    setSelectedTimeRange(days);
+  };
+
+  const handleTrade = async () => {
+    if (!user) {
+      alert('Please log in to trade');
+      return;
+    }
+    if (!tradeAmount || isNaN(tradeAmount) || tradeAmount <= 0) {
+      alert('Please enter a valid amount');
+      return;
+    }
+    if (orderType === 'limit' && (!limitPrice || isNaN(limitPrice) || limitPrice <= 0)) {
+      alert('Please enter a valid limit price');
+      return;
+    }
+    if (orderType === 'stop-limit' && (!limitPrice || isNaN(limitPrice) || limitPrice <= 0 || !stopPrice || isNaN(stopPrice) || stopPrice <= 0)) {
+      alert('Please enter valid limit and stop prices');
+      return;
+    }
+    if (!prices[selectedAsset]?.usd) {
+      alert(`Price data for ${selectedAsset} is not available`);
+      return;
+    }
+    // NEW: Check KYC status
+    if (kycStatus !== 'verified') {
+      alert('Please complete KYC verification to trade');
+      return;
+    }
+
+    // NEW: Check wallet balance
+    const totalCost = orderType === 'limit' || orderType === 'stop-limit' ? parseFloat(tradeAmount) * parseFloat(limitPrice) : parseFloat(tradeAmount) * prices[selectedAsset].usd;
+    if (tradeType === 'buy' && wallet.usd < totalCost) {
+      alert('Insufficient USD balance');
+      return;
+    }
+    if (tradeType === 'sell' && wallet[selectedAsset] < parseFloat(tradeAmount)) {
+      alert(`Insufficient ${selectedAsset} balance`);
+      return;
+    }
+
+    const trade = {
+      userId: user.uid,
+      asset: selectedAsset,
+      type: tradeType,
+      orderType,
+      amount: parseFloat(tradeAmount),
+      price: orderType === 'market' ? prices[selectedAsset].usd : parseFloat(limitPrice),
+      stopPrice: orderType === 'stop-limit' ? parseFloat(stopPrice) : null, // NEW: Stop price
+      timestamp: Date.now(),
+    };
+
+    try {
+      console.log('Saving trade to Firestore:', trade);
+      await addDoc(collection(db, 'trades'), trade);
+
+      // NEW: Update wallet
+      const walletRef = doc(db, 'wallets', user.uid);
+      const newWallet = { ...wallet };
+      if (tradeType === 'buy') {
+        newWallet.usd -= totalCost;
+        newWallet[selectedAsset] += parseFloat(tradeAmount);
       } else {
-        console.log('No user, clearing state');
-        setBalance(10000);
-        setTrades([]);
-        setProfitLossHistory([]);
-        setSuggestions([]);
-        setLoading(false);
+        newWallet.usd += totalCost;
+        newWallet[selectedAsset] -= parseFloat(tradeAmount);
       }
-    });
-    return () => unsubscribe();
-  }, []);
+      await setDoc(walletRef, newWallet);
+      setWallet(newWallet);
 
-  const saveUserData = async () => {
-    if (user) {
-      try {
-        const userDocRef = doc(db, 'users', user.uid);
-        const data = { balance, trades, profitLossHistory };
-        console.log('Saving to Firestore:', data);
-        await setDoc(userDocRef, data, { merge: true });
-        console.log('Firestore save successful');
-      } catch (error) {
-        console.error('Firestore save error:', error);
-        setAlert({ type: 'danger', message: `Failed to save data: ${error.message}` });
-        setTimeout(() => setAlert(null), 5000);
+      // NEW: Send order to WebSocket for limit/stop-limit
+      if (orderType !== 'market') {
+        wsRef.current.send(JSON.stringify({ asset: selectedAsset, order: { price: trade.price, amount: trade.amount, type: tradeType } }));
       }
+
+      console.log('Trade saved successfully');
+      setTradeAmount('');
+      setLimitPrice('');
+      setStopPrice('');
+    } catch (error) {
+      console.error('Error saving trade:', error.message);
+      alert(`Failed to save trade: ${error.message}`);
     }
   };
 
-  const handleLogin = async e => {
+  const handleLogin = async (e) => {
     e.preventDefault();
     try {
-      await signInWithEmailAndPassword(auth, email, password);
-      setAlert({ type: 'success', message: 'Logged in successfully!' });
-      setTimeout(() => setAlert(null), 3000);
-      setEmail('');
-      setPassword('');
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      const user = userCredential.user;
+      if (multiFactor(user).enrolledFactors.length === 0) {
+        alert('2FA setup required. Please provide your phone number.');
+        setVerificationId('pending'); // Trigger 2FA setup
+      } else {
+        console.log('Login successful:', email);
+        setLoginError('');
+        setEmail('');
+        setPassword('');
+      }
     } catch (error) {
-      setAlert({ type: 'danger', message: 'Invalid email or password.' });
-      setTimeout(() => setAlert(null), 3000);
+      console.error('Login error:', error.message);
+      setLoginError(error.message);
     }
   };
 
-  const handleLogout = async () => {
+  // NEW: 2FA Setup
+  const handle2FASetup = async () => {
     try {
-      await saveUserData();
+      const recaptchaVerifier = new RecaptchaVerifier('recaptcha-container', { size: 'invisible' }, auth);
+      const phoneInfoOptions = {
+        phoneNumber,
+        session: await multiFactor(user).getSession(),
+      };
+      const phoneAuthProvider = new PhoneAuthProvider(auth);
+      const verificationId = await phoneAuthProvider.verifyPhoneNumber(phoneInfoOptions, recaptchaVerifier);
+      setVerificationId(verificationId);
+    } catch (error) {
+      console.error('2FA setup error:', error.message);
+      setLoginError(error.message);
+    }
+  };
+
+  // NEW: 2FA Verification
+  const handle2FAVerify = async () => {
+    try {
+      const credential = PhoneAuthProvider.credential(verificationId, verificationCode);
+      const multiFactorAssertion = PhoneMultiFactorGenerator.assertion(credential);
+      await multiFactor(user).enroll(multiFactorAssertion, 'phone');
+      console.log('2FA enrolled successfully');
+      setVerificationId('');
+      setPhoneNumber('');
+      setVerificationCode('');
+      setLoginError('');
+    } catch (error) {
+      console.error('2FA verification error:', error.message);
+      setLoginError(error.message);
+    }
+  };
+
+  // NEW: KYC Submission (Stub)
+  const handleKYCSubmit = async () => {
+    try {
+      const kycRef = doc(db, 'kyc', user.uid);
+      await setDoc(kycRef, { status: 'verified' });
+      setKycStatus('verified');
+      alert('KYC verification submitted (simulated).');
+    } catch (error) {
+      console.error('KYC submission error:', error.message);
+      alert('KYC submission failed: ' + error.message);
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
       await signOut(auth);
-      setAlert({ type: 'success', message: 'Logged out successfully!' });
-      setTimeout(() => setAlert(null), 3000);
+      console.log('Sign out successful');
     } catch (error) {
-      console.error('Logout error:', error);
-      setAlert({ type: 'danger', message: 'Error logging out.' });
-      setTimeout(() => setAlert(null), 3000);
+      console.error('Sign out error:', error.message);
     }
   };
 
-  const handleSubmit = async e => {
-    e.preventDefault();
-    if (!coin || !amount || !price || amount <= 0 || price <= 0) {
-      setAlert({ type: 'danger', message: 'Please fill all fields with valid values.' });
-      setTimeout(() => setAlert(null), 3000);
-      return;
-    }
-    if (!['BTC', 'ETH', 'LTC'].includes(coin)) {
-      setAlert({ type: 'danger', message: 'Invalid coin. Use BTC, ETH, or LTC.' });
-      setTimeout(() => setAlert(null), 3000);
-      return;
-    }
-    const cost = parseFloat(amount) * parseFloat(price);
-    if (cost > balance) {
-      setAlert({ type: 'danger', message: 'Insufficient balance.' });
-      setTimeout(() => setAlert(null), 3000);
-      return;
-    }
-    const newTrade = { id: Date.now(), coin, amount: parseFloat(amount), price: parseFloat(price) };
-    const newTrades = [...trades, newTrade];
-    const newBalance = balance - cost;
-    console.log('Adding trade:', newTrade, 'New balance:', newBalance);
-    setTrades(newTrades);
-    setBalance(newBalance);
-    setCoin('');
-    setAmount('');
-    setPrice('');
-    setAlert({ type: 'success', message: 'Trade added successfully!' });
-    setTimeout(() => setAlert(null), 3000);
-    await saveUserData();
+  const handleExportCSV = () => {
+    const headers = ['ID', 'Asset', 'Type', 'Order Type', 'Amount', 'Price', 'Stop Price', 'Timestamp'];
+    const rows = trades.map(trade => [
+      trade.id,
+      trade.asset,
+      trade.type,
+      trade.orderType,
+      trade.amount,
+      trade.price,
+      trade.stopPrice || 'N/A',
+      format(trade.timestamp, 'PPp'),
+    ]);
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(row => row.join(',')),
+    ].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `trades_${format(Date.now(), 'yyyy-MM-dd')}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
-  const handleSell = async (tradeId, coin, amount) => {
-    const trade = trades.find(t => t.id === tradeId);
-    if (trade) {
-      const currentPrice = coinPrices[coin] || 0;
-      const newBalance = balance + amount * currentPrice;
-      const newTrades = trades.filter(t => t.id !== tradeId);
-      console.log('Selling trade:', trade, 'New balance:', newBalance);
-      setBalance(newBalance);
-      setTrades(newTrades);
-      setAlert({ type: 'success', message: `Sold ${amount} ${coin} for $${(amount * currentPrice).toFixed(2)}!` });
-      setTimeout(() => setAlert(null), 3000);
-      await saveUserData();
-    }
-  };
+  const assets = ['bitcoin', 'ethereum', 'litecoin', 'ripple', 'cardano', 'solana'];
 
-  const walletHoldings = trades.reduce((acc, trade) => {
-    if (!acc[trade.coin]) {
-      acc[trade.coin] = { amount: 0, value: 0, purchaseValue: 0, profitLoss: 0, profitLossPercent: 0 };
-    }
-    acc[trade.coin].amount += trade.amount;
-    acc[trade.coin].value += trade.amount * (coinPrices[trade.coin] || 0);
-    acc[trade.coin].purchaseValue += trade.amount * trade.price;
-    acc[trade.coin].profitLoss += trade.amount * ((coinPrices[trade.coin] || 0) - trade.price);
-    acc[trade.coin].profitLossPercent = acc[trade.coin].purchaseValue
-      ? (acc[trade.coin].profitLoss / acc[trade.coin].purchaseValue) * 100
-      : 0;
-    return acc;
-  }, {});
-
-  const totalValue = Object.values(walletHoldings).reduce((sum, h) => sum + h.value, 0);
-  const totalProfitLoss = Object.values(walletHoldings).reduce((sum, h) => sum + h.profitLoss, 0);
-  const totalProfitLossPercent = totalValue
-    ? (totalProfitLoss / Object.values(walletHoldings).reduce((sum, h) => sum + h.purchaseValue, 0)) * 100
-    : 0;
-
-  const chartData = {
-    labels: trades.length > 0 ? trades.map((_, index) => `Trade ${index + 1}`) : ['No Trades'],
-    datasets: [...new Set(trades.map(trade => trade.coin))].map(coin => ({
-      label: `${coin} Value ($)`,
-      data: trades.length > 0 
-        ? trades.map(trade => (trade.coin === coin ? trade.amount * (coinPrices[trade.coin] || 0) : 0))
-        : [0],
-      borderColor: coin === 'BTC' ? 'rgba(255, 99, 132, 1)' : coin === 'ETH' ? 'rgba(54, 162, 235, 1)' : 'rgba(75, 192, 192, 1)',
-      backgroundColor: coin === 'BTC' ? 'rgba(255, 99, 132, 0.2)' : coin === 'ETH' ? 'rgba(54, 162, 235, 0.2)' : 'rgba(75, 192, 192, 0.2)',
-      fill: false
-    }))
-  };
-
-  const profitLossChartData = {
-    labels: profitLossHistory.length > 0 
-      ? profitLossHistory.map(entry => new Date(entry.timestamp).toLocaleTimeString()) 
-      : ['No Data'],
-    datasets: [{
-      label: 'Total Profit/Loss ($)',
-      data: profitLossHistory.length > 0 ? profitLossHistory.map(entry => entry.profitLoss) : [0],
-      borderColor: 'rgba(153, 102, 255, 1)',
-      backgroundColor: 'rgba(153, 102, 255, 0.2)',
-      fill: false
-    }]
-  };
-
-  const chartOptions = {
-    responsive: true,
-    plugins: {
-      tooltip: {
-        enabled: true,
-        mode: 'index',
-        intersect: false,
-        callbacks: {
-          label: (context) => {
-            const datasetLabel = context.dataset.label || '';
-            const value = context.parsed.y;
-            return `${datasetLabel}: $${value.toFixed(2)}`;
-          }
-        }
+  const pieChartData = {
+    labels: assets,
+    datasets: [
+      {
+        data: assets.map(asset =>
+          trades
+            .filter(trade => trade.asset === asset)
+            .reduce((sum, trade) => sum + trade.amount * trade.price, 0)
+        ),
+        backgroundColor: ['#f0b90b', '#627eea', '#00ff00', '#ff5733', '#c70039', '#00b7eb'],
       },
-      zoom: {
-        zoom: {
-          wheel: { enabled: true },
-          pinch: { enabled: true },
-          mode: 'xy'
-        },
-        pan: {
-          enabled: true,
-          mode: 'xy'
-        }
-      }
-    },
-    scales: {
-      x: { title: { display: true, text: 'Trade Number' } },
-      y: { title: { display: true, text: 'Value ($)' } }
-    }
+    ],
   };
 
-  const profitLossChartOptions = {
-    responsive: true,
-    plugins: {
-      tooltip: {
-        enabled: true,
-        mode: 'index',
-        intersect: false,
-        callbacks: {
-          label: (context) => {
-            const value = context.parsed.y;
-            return `Profit/Loss: $${value.toFixed(2)}`;
-          }
-        }
-      },
-      zoom: {
-        zoom: {
-          wheel: { enabled: true },
-          pinch: { enabled: true },
-          mode: 'xy'
-        },
-        pan: {
-          enabled: true,
-          mode: 'xy'
-        }
-      }
-    },
-    scales: {
-      x: { title: { display: true, text: 'Time' } },
-      y: { title: { display: true, text: 'Profit/Loss ($)' } }
-    }
+  const tradePreview = {
+    total: orderType === 'limit' || orderType === 'stop-limit' ? (parseFloat(tradeAmount) || 0) * (parseFloat(limitPrice) || 0)
+          : (parseFloat(tradeAmount) || 0) * (prices[selectedAsset]?.usd || 0),
+    fee: ((parseFloat(tradeAmount) || 0) * (orderType === 'limit' || orderType === 'stop-limit' ? parseFloat(limitPrice) || 0 : prices[selectedAsset]?.usd || 0) * 0.001).toFixed(2),
   };
-
-  if (!user) {
-    return (
-      <Container className="mt-5">
-        <h2>Login to Bidance</h2>
-        {alert && <Alert variant={alert.type}>{alert.message}</Alert>}
-        <Form onSubmit={handleLogin}>
-          <Form.Group className="mb-3">
-            <Form.Label>Email</Form.Label>
-            <Form.Control
-              type="email"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              placeholder="Enter email"
-            />
-          </Form.Group>
-          <Form.Group className="mb-3">
-            <Form.Label>Password</Form.Label>
-            <Form.Control
-              type="password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              placeholder="Enter password"
-            />
-          </Form.Group>
-          <Button variant="primary" type="submit">
-            Login
-          </Button>
-        </Form>
-      </Container>
-    );
-  }
-
-  if (loading) {
-    return (
-      <Container className="mt-5">
-        <h3>Loading data...</h3>
-      </Container>
-    );
-  }
 
   return (
     <div>
-      <Navbar bg="dark" variant="dark" expand="lg">
-        <Container>
-          <Navbar.Brand>Bidance</Navbar.Brand>
-          <Nav className="me-auto" activeKey={key} onSelect={setKey}>
-            <Nav.Link eventKey="dashboard">Home</Nav.Link>
-            <Nav.Link eventKey="trade">Trade</Nav.Link>
-            <Nav.Link eventKey="wallet">Wallet</Nav.Link>
-            <Nav.Link eventKey="history">History</Nav.Link>
-            <Nav.Link eventKey="chart">Chart</Nav.Link>
-            <Nav.Link eventKey="analytics">Analytics</Nav.Link>
-          </Nav>
-          <Button variant="outline-light" onClick={handleLogout}>
-            Logout
-          </Button>
-        </Container>
-      </Navbar>
-      <Container className="mt-4">
-        {alert && <Alert variant={alert.type}>{alert.message}</Alert>}
-        <Tabs activeKey={key} onSelect={setKey} className="mb-3">
-          <Tab eventKey="dashboard" title="Dashboard">
-            <h3>Balance: ${balance.toFixed(2)}</h3>
-            <h4>Trades</h4>
-            {trades.length === 0 ? (
-              <p>No trades yet.</p>
-            ) : (
-              <ul>
-                {trades.map(trade => (
-                  <li key={trade.id}>
-                    {trade.amount} {trade.coin} @ ${trade.price.toFixed(2)}
-                  </li>
-                ))}
-              </ul>
+      <div className="header">
+        <div className="header-logo">Bidance</div>
+        {user && (
+          <div className="header-user">
+            <p>{user.email}</p>
+            <p>KYC Status: {kycStatus}</p> {/* NEW: Show KYC status */}
+            <p>USD Balance: ${wallet.usd?.toFixed(2) || '0.00'}</p> {/* NEW: Show USD balance */}
+            <button className="btn btn-signout" onClick={handleSignOut}>
+              Sign Out
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="ticker">
+        <ul>
+          {assets.map(asset => (
+            <li key={asset}>
+              {asset.toUpperCase()}/USD: ${prices[asset]?.usd || 'N/A'}
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="container mt-4">
+        {!user ? (
+          <div className="login-form">
+            <h3>Login</h3>
+            <form onSubmit={handleLogin}>
+              <div className="mb-3">
+                <input
+                  type="email"
+                  className="form-control"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="Email"
+                  required
+                />
+              </div>
+              <div className="mb-3">
+                <input
+                  type="password"
+                  className="form-control"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Password"
+                  required
+                />
+              </div>
+              {/* NEW: 2FA Inputs */}
+              {verificationId && (
+                <>
+                  <div className="mb-3">
+                    <input
+                      type="tel"
+                      className="form-control"
+                      value={phoneNumber}
+                      onChange={(e) => setPhoneNumber(e.target.value)}
+                      placeholder="Phone Number (e.g., +1234567890)"
+                    />
+                    <button type="button" className="btn btn-secondary mt-2" onClick={handle2FASetup}>
+                      Send 2FA Code
+                    </button>
+                  </div>
+                  {verificationId !== 'pending' && (
+                    <div className="mb-3">
+                      <input
+                        type="text"
+                        className="form-control"
+                        value={verificationCode}
+                        onChange={(e) => setVerificationCode(e.target.value)}
+                        placeholder="Verification Code"
+                      />
+                      <button type="button" className="btn btn-secondary mt-2" onClick={handle2FAVerify}>
+                        Verify 2FA
+                      </button>
+                    </div>
+                  )}
+                  <div id="recaptcha-container"></div>
+                </>
+              )}
+              {loginError && <p className="text-danger">{loginError}</p>}
+              <button type="submit" className="btn btn-primary">Login</button>
+            </form>
+          </div>
+        ) : (
+          <>
+            {/* NEW: KYC Warning */}
+            {kycStatus !== 'verified' && (
+              <div className="alert alert-warning">
+                <p>KYC verification required to trade.</p>
+                <button className="btn btn-primary" onClick={handleKYCSubmit}>Submit KYC (Simulated)</button>
+              </div>
             )}
-          </Tab>
-          <Tab eventKey="trade" title="Trade">
-            <Form onSubmit={handleSubmit}>
-              <Form.Group className="mb-3">
-                <Form.Label>Coin</Form.Label>
-                <Form.Control
-                  type="text"
-                  value={coin}
-                  onChange={e => setCoin(e.target.value.toUpperCase())}
-                  placeholder="e.g., BTC"
-                />
-              </Form.Group>
-              <Form.Group className="mb-3">
-                <Form.Label>Amount</Form.Label>
-                <Form.Control
-                  type="number"
-                  value={amount}
-                  onChange={e => setAmount(e.target.value)}
-                  placeholder="e.g., 0.01"
-                />
-              </Form.Group>
-              <Form.Group className="mb-3">
-                <Form.Label>Price ($)</Form.Label>
-                <Form.Control
-                  type="number"
-                  value={price}
-                  onChange={e => setPrice(e.target.value)}
-                  placeholder="e.g., 65000"
-                />
-              </Form.Group>
-              <Button variant="primary" type="submit">
-                Buy
-              </Button>
-            </Form>
-            <h4 className="mt-3">Trade Suggestions</h4>
-            {suggestions.length === 0 ? (
-              <p>No suggestions available.</p>
-            ) : (
-              <ul>
-                {suggestions.map(suggestion => (
-                  <li key={suggestion.coin}>
-                    {suggestion.coin}: 24h Change: {suggestion.price_change_24h.toFixed(2)}%
-                    <Button
-                      variant="link"
-                      size="sm"
-                      className="ms-2"
-                      onClick={() => setCoin(suggestion.coin)}
-                    >
-                      Select
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Tab>
-          <Tab eventKey="wallet" title="Wallet">
-            <h3>Total Value: ${totalValue.toFixed(2)}</h3>
-            <h4>Total Profit/Loss: ${totalProfitLoss.toFixed(2)} ({totalProfitLossPercent.toFixed(2)}%)</h4>
-            <h4>Holdings</h4>
-            {Object.keys(walletHoldings).length === 0 ? (
-              <p>No holdings yet.</p>
-            ) : (
-              <ul>
-                {Object.entries(walletHoldings).map(([coin, holding]) => (
-                  <li key={coin}>
-                    {coin}: {holding.amount.toFixed(6)} (Value: ${holding.value.toFixed(2)}, P/L: ${holding.profitLoss.toFixed(2)} ({holding.profitLossPercent.toFixed(2)}%)
-                    <Button
-                      variant="danger"
-                      size="sm"
-                      className="ms-2"
-                      onClick={() => {
-                        const latestTrade = trades
-                          .filter(t => t.coin === coin)
-                          .slice(-1)[0];
-                        if (latestTrade) handleSell(latestTrade.id, coin, latestTrade.amount);
+            <ul className="nav nav-tabs mb-3">
+              <li className="nav-item">
+                <button className="nav-link active" data-bs-toggle="tab" data-bs-target="#prices">Prices</button>
+              </li>
+              <li className="nav-item">
+                <button className="nav-link" data-bs-toggle="tab" data-bs-target="#charts">Charts</button>
+              </li>
+              <li className="nav-item">
+                <button className="nav-link" data-bs-toggle="tab" data-bs-target="#trade">Trade</button>
+              </li>
+              <li className="nav-item">
+                <button className="nav-link" data-bs-toggle="tab" data-bs-target="#history">Trade History</button>
+              </li>
+              <li className="nav-item">
+                <button className="nav-link" data-bs-toggle="tab" data-bs-target="#analytics">Analytics</button>
+              </li>
+              <li className="nav-item">
+                <button className="nav-link" data-bs-toggle="tab" data-bs-target="#orderbook">Order Book</button>
+              </li>
+              <li className="nav-item">
+                <button className="nav-link" data-bs-toggle="tab" data-bs-target="#depth">Depth Chart</button>
+              </li>
+              <li className="nav-item">
+                <button className="nav-link" data-bs-toggle="tab" data-bs-target="#wallet">Wallet</button> {/* NEW: Wallet tab */}
+              </li>
+            </ul>
+
+            <div className="tab-content">
+              <div className="tab-pane fade show active" id="prices">
+                <h2>Prices</h2>
+                {Object.keys(prices).length === 0 ? (
+                  <p>Loading prices...</p>
+                ) : (
+                  <ul className="list-group">
+                    {assets.map((asset) => (
+                      <li key={asset} className="list-group-item">
+                        {asset.charAt(0).toUpperCase() + asset.slice(1)}: ${prices[asset]?.usd || 'N/A'}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div className="tab-pane fade" id="charts">
+                <h2>Charts</h2>
+                <div className="mb-3">
+                  <select className="form-select d-inline w-auto me-2" value={selectedAsset} onChange={handleAssetChange}>
+                    {assets.map((asset) => (
+                      <option key={asset} value={asset}>
+                        {asset.charAt(0).toUpperCase() + asset.slice(1)}
+                      </option>
+                    ))}
+                  </select>
+                  <select className="form-select d-inline w-auto" value={selectedTimeRange} onChange={handleTimeRangeChange}>
+                    <option value="1">1 Day</option>
+                    <option value="7">7 Days</option>
+                    <option value="30">30 Days</option>
+                  </select>
+                </div>
+                <ErrorBoundary>
+                  {chartError && <p className="text-danger">{chartError}</p>}
+                  {chartData && canvasRef.current ? (
+                    <div className="chart-container">
+                      <Chart
+                        type="candlestick"
+                        key={`${selectedAsset}-${selectedTimeRange}`}
+                        ref={(chart) => {
+                          console.log(`Setting chartRef for ${selectedAsset}:`, chart);
+                          if (chart && canvasRef.current) {
+                            chartRef.current = chart;
+                          }
+                        }}
+                        data={chartData}
+                        options={{
+                          responsive: true,
+                          maintainAspectRatio: false,
+                          scales: {
+                            x: {
+                              type: 'time',
+                              time: {
+                                unit: selectedTimeRange === '1' ? 'hour' : 'day',
+                              },
+                              grid: { color: '#333333' },
+                            },
+                            y: {
+                              beginAtZero: false,
+                              title: {
+                                display: true,
+                                text: 'Price (USD)',
+                                color: '#ffffff',
+                              },
+                              grid: { color: '#333333' },
+                            },
+                          },
+                          plugins: {
+                            legend: { labels: { color: '#ffffff' } },
+                            tooltip: { backgroundColor: '#212121', titleColor: '#ffffff', bodyColor: '#ffffff' },
+                            zoom: {
+                              zoom: {
+                                wheel: { enabled: true },
+                                pinch: { enabled: true },
+                                mode: 'xy',
+                              },
+                              pan: { enabled: true, mode: 'xy' },
+                            },
+                          },
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <p>{chartError ? `Error loading chart: ${chartError}` : 'Loading chart...'}</p>
+                  )}
+                  <canvas ref={canvasRef} style={{ display: 'block' }} />
+                </ErrorBoundary>
+              </div>
+
+              <div className="tab-pane fade" id="trade">
+                <h2>Trade</h2>
+                <div className="trade-form">
+                  <select className="form-select w-auto" value={selectedAsset} onChange={handleAssetChange}>
+                    {assets.map((asset) => (
+                      <option key={asset} value={asset}>
+                        {asset.charAt(0).toUpperCase() + asset.slice(1)}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="form-select w-auto"
+                    value={orderType}
+                    onChange={(e) => setOrderType(e.target.value)}
+                  >
+                    <option value="market">Market</option>
+                    <option value="limit">Limit</option>
+                    <option value="stop-limit">Stop-Limit</option> {/* NEW: Stop-limit option */}
+                  </select>
+                  <select
+                    className="form-select w-auto"
+                    value={tradeType}
+                    onChange={(e) => setTradeType(e.target.value)}
+                  >
+                    <option value="buy">Buy</option>
+                    <option value="sell">Sell</option>
+                  </select>
+                  <input
+                    type="number"
+                    className="form-control w-auto"
+                    value={tradeAmount}
+                    onChange={(e) => setTradeAmount(e.target.value)}
+                    placeholder="Amount"
+                  />
+                  {(orderType === 'limit' || orderType === 'stop-limit') && (
+                    <input
+                      type="number"
+                      className="form-control w-auto"
+                      value={limitPrice}
+                      onChange={(e) => setLimitPrice(e.target.value)}
+                      placeholder="Limit Price"
+                    />
+                  )}
+                  {orderType === 'stop-limit' && (
+                    <input
+                      type="number"
+                      className="form-control w-auto"
+                      value={stopPrice}
+                      onChange={(e) => setStopPrice(e.target.value)}
+                      placeholder="Stop Price"
+                    />
+                  )}
+                  <button className="btn btn-primary" onClick={handleTrade} disabled={kycStatus !== 'verified'}>
+                    Execute Trade
+                  </button>
+                </div>
+                <p>Current Price: ${prices[selectedAsset]?.usd || 'N/A'}</p>
+                {(tradeAmount && prices[selectedAsset]?.usd) || (orderType === 'limit' && limitPrice) || (orderType === 'stop-limit' && limitPrice && stopPrice) ? (
+                  <div className="trade-preview">
+                    <p>Total: ${tradePreview.total.toFixed(2)}</p>
+                    <p>Fee (0.1%): ${tradePreview.fee}</p>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="tab-pane fade" id="history">
+                <h2>Trade History</h2>
+                <button className="btn btn-primary mb-3" onClick={handleExportCSV}>Export to CSV</button>
+                {trades.length === 0 ? (
+                  <p>No trades yet.</p>
+                ) : (
+                  <ul className="list-group">
+                    {trades.map((trade) => (
+                      <li key={trade.id} className="list-group-item">
+                        {trade.type.toUpperCase()} {trade.amount} {trade.asset.toUpperCase()} at ${trade.price} ({trade.orderType})
+                        {trade.stopPrice ? `, Stop: $${trade.stopPrice}` : ''} on {format(trade.timestamp, 'PPp')}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div className="tab-pane fade" id="analytics">
+                <h2>Analytics</h2>
+                {trades.length === 0 ? (
+                  <p>No trades to analyze.</p>
+                ) : (
+                  <>
+                    <p>Total Trades: {trades.length}</p>
+                    <p>
+                      Total Volume: $
+                      {trades.reduce((sum, trade) => sum + trade.amount * trade.price, 0).toFixed(2)}
+                    </p>
+                    <div className="pie-chart-container">
+                      <h3>Trade Distribution by Asset</h3>
+                      <Pie
+                        data={pieChartData}
+                        options={{
+                          responsive: true,
+                          plugins: {
+                            legend: { labels: { color: '#ffffff' } },
+                          },
+                        }}
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <div className="tab-pane fade" id="orderbook">
+                <h2>Order Book</h2>
+                <div className="order-book">
+                  <div className="order-book-section">
+                    <h3>Bids</h3>
+                    <table className="table table-dark">
+                      <thead>
+                        <tr>
+                          <th>Price (USD)</th>
+                          <th>Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {orderBook.bids.map((bid, index) => (
+                          <tr key={`bid-${index}`}>
+                            <td className="text-success">{bid.price}</td>
+                            <td>{bid.amount}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="order-book-section">
+                    <h3>Asks</h3>
+                    <table className="table table-dark">
+                      <thead>
+                        <tr>
+                          <th>Price (USD)</th>
+                          <th>Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {orderBook.asks.map((ask, index) => (
+                          <tr key={`ask-${index}`}>
+                            <td className="text-danger">{ask.price}</td>
+                            <td>{ask.amount}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              <div className="tab-pane fade" id="depth">
+                <h2>Depth Chart</h2>
+                <div className="chart-container">
+                  {depthData ? (
+                    <Chart
+                      type="line"
+                      data={depthData}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: {
+                          x: {
+                            title: { display: true, text: 'Price (USD)', color: '#ffffff' },
+                            grid: { color: '#333333' },
+                          },
+                          y: {
+                            title: { display: true, text: 'Amount', color: '#ffffff' },
+                            grid: { color: '#333333' },
+                          },
+                        },
+                        plugins: {
+                          legend: { labels: { color: '#ffffff' } },
+                          tooltip: { backgroundColor: '#212121', titleColor: '#ffffff', bodyColor: '#ffffff' },
+                        },
                       }}
-                    >
-                      Sell
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Tab>
-          <Tab eventKey="history" title="History">
-            <h4>Trade History</h4>
-            {trades.length === 0 ? (
-              <p>No trade history.</p>
-            ) : (
-              <ul>
-                {trades.slice().reverse().map(trade => (
-                  <li key={trade.id}>
-                    {trade.amount} {trade.coin} @ ${trade.price.toFixed(2)}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Tab>
-          <Tab eventKey="chart" title="Chart">
-            <h4>Trade Value Chart</h4>
-            {trades.length === 0 ? (
-              <p>No trades to display.</p>
-            ) : (
-              <Line
-                data={chartData}
-                options={chartOptions}
-              />
-            )}
-          </Tab>
-          <Tab eventKey="analytics" title="Analytics">
-            <h4>Profit/Loss Trend</h4>
-            <Line
-              data={profitLossChartData}
-              options={profitLossChartOptions}
-            />
-          </Tab>
-        </Tabs>
-      </Container>
+                    />
+                  ) : (
+                    <p>Loading depth chart...</p>
+                  )}
+                </div>
+              </div>
+
+              {/* NEW: Wallet Tab */}
+              <div className="tab-pane fade" id="wallet">
+                <h2>Wallet</h2>
+                <ul className="list-group">
+                  <li className="list-group-item">USD: ${wallet.usd?.toFixed(2) || '0.00'}</li>
+                  {assets.map((asset) => (
+                    <li key={asset} className="list-group-item">
+                      {asset.charAt(0).toUpperCase() + asset.slice(1)}: {wallet[asset]?.toFixed(6) || '0.000000'}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
-}
+};
 
 export default App;

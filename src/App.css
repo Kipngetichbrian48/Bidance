@@ -18,7 +18,10 @@ body {
 .container {
   max-width: 1400px;
   margin: 0 auto;
-  padding: 0 15px;
+  padding: 20px;
+  width: 100% !important;
+  min-width: 100% !important;
+  box-sizing: border-box;
 }
 
 /* Header */
@@ -45,7 +48,7 @@ body {
 
 .header-user p {
   margin: 0;
-  font-size: 14px;
+  font-size: 16px;
 }
 
 .btn-signout {
@@ -81,6 +84,7 @@ body {
 .ticker li {
   font-size: 14px;
   color: #00ff00; /* Green for prices */
+  margin-right: 20px;
 }
 
 /* Navigation Tabs */
@@ -111,12 +115,37 @@ body {
   background-color: var(--binance-card-bg);
   padding: 20px;
   border-radius: 8px;
+  width: 100% !important;
+  min-width: 100% !important;
+  min-height: 400px;
+  box-sizing: border-box;
 }
 
-.tab-pane h2 {
-  font-size: 20px;
-  margin-bottom: 20px;
-  color: var(--binance-accent);
+/* Tab Pane */
+.tab-pane {
+  display: none;
+}
+
+.tab-pane.active.show {
+  display: block;
+}
+
+/* Charts and Depth Chart Container */
+.chart-container {
+  position: relative;
+  min-height: 400px;
+  min-width: 100%;
+}
+
+.chart-container canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background-color: #1a1a1a;
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
 }
 
 /* Prices Tab */
@@ -126,17 +155,6 @@ body {
   color: var(--binance-text);
   font-size: 16px;
   padding: 12px;
-}
-
-/* Charts Tab */
-.chart-container {
-  position: relative;
-  height: 400px;
-  background-color: var(--binance-bg);
-  padding: 10px;
-  border: 1px solid var(--binance-border);
-  border-radius: 4px;
-  width: 100%;
 }
 
 /* Form Elements */
@@ -200,7 +218,7 @@ body {
 
 .order-book-section {
   flex: 1;
-  min-width: 300px;
+  min-width: 200px;
 }
 
 .order-book-section h3 {
@@ -237,7 +255,7 @@ body {
   max-width: 300px;
 }
 
-/* NEW: KYC Warning */
+/* KYC Warning */
 .alert-warning {
   background-color: var(--binance-accent);
   color: var(--binance-bg);
@@ -246,7 +264,7 @@ body {
   margin-bottom: 20px;
 }
 
-/* NEW: Wallet Tab */
+/* Wallet Tab */
 .wallet-tab {
   margin-top: 20px;
 }
@@ -274,6 +292,7 @@ body {
 
   .ticker li {
     font-size: 12px;
+    margin-right: 10px;
   }
 
   .trade-form {
@@ -281,11 +300,16 @@ body {
     align-items: stretch;
   }
 
-  .chart-container {
-    height: 300px;
-  }
-
   .order-book {
     flex-direction: column;
+  }
+
+  .chart-container {
+    min-height: 300px;
+  }
+
+  .tab-content,
+  .tab-pane {
+    min-height: 300px;
   }
 }

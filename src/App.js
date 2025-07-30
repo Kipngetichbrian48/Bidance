@@ -11,6 +11,7 @@ import {
 } from 'firebase/auth';
 import { collection, addDoc, onSnapshot, query, where, doc, setDoc, getDoc } from 'firebase/firestore';
 import axios from 'axios';
+import { createChart } from 'lightweight-charts';
 import { Chart as ChartJS, LineController, LineElement, PointElement, LinearScale, TimeScale, CategoryScale, Title, Tooltip, Legend, ArcElement } from 'chart.js';
 import { CandlestickController, CandlestickElement } from 'chartjs-chart-financial';
 import { Chart, Pie } from 'react-chartjs-2';
@@ -18,6 +19,7 @@ import 'chartjs-adapter-date-fns';
 import { format } from 'date-fns';
 import ZoomPlugin from 'chartjs-plugin-zoom';
 import './App.css';
+import 'bootstrap/dist/css/bootstrap.min.css';
 
 ChartJS.register(LineController, LineElement, PointElement, LinearScale, TimeScale, CategoryScale, Title, Tooltip, Legend, ArcElement, ZoomPlugin, CandlestickController, CandlestickElement);
 
@@ -37,6 +39,266 @@ class ErrorBoundary extends Component {
   }
 }
 
+// Depth Chart Component
+class DepthChart extends Component {
+  constructor(props) {
+    super(props);
+    this.chartContainerRef = React.createRef();
+    this.chartInstanceRef = React.createRef(null);
+    this.resizeHandler = null;
+  }
+
+  componentDidMount() {
+    console.log('DepthChart componentDidMount');
+    this.renderChart();
+  }
+
+  componentDidUpdate(prevProps) {
+    if (prevProps.orderBook !== this.props.orderBook || prevProps.isActive !== this.props.isActive) {
+      console.log('DepthChart componentDidUpdate triggered:', {
+        orderBookChanged: prevProps.orderBook !== this.props.orderBook,
+        isActiveChanged: prevProps.isActive !== this.props.isActive,
+        isActive: this.props.isActive,
+        activeTab: this.props.activeTab,
+      });
+      this.renderChart();
+    }
+  }
+
+  componentWillUnmount() {
+    console.log('DepthChart componentWillUnmount');
+    if (this.chartInstanceRef.current) {
+      try {
+        this.chartInstanceRef.current.remove();
+        console.log('Chart instance removed');
+      } catch (error) {
+        console.error('Error removing chart instance:', error);
+      }
+      this.chartInstanceRef.current = null;
+    }
+    if (this.resizeHandler) {
+      window.removeEventListener('resize', this.resizeHandler);
+      console.log('Resize handler removed');
+    }
+  }
+
+  renderChart() {
+    const { orderBook, setDepthChartError, isActive, activeTab } = this.props;
+    const container = this.chartContainerRef.current;
+
+    console.log('DepthChart renderChart props:', { isActive, activeTab, hasContainer: !!container, hasData: !!orderBook?.bids?.length && !!orderBook?.asks?.length });
+
+    if (!container || !isActive) {
+      console.log('Skipping Depth Chart render: Missing container or tab not active', { container: !!container, isActive });
+      return;
+    }
+
+    if (!orderBook?.bids?.length || !orderBook?.asks?.length) {
+      console.log('Skipping Depth Chart render: No valid order book data');
+      setDepthChartError('No order book data available');
+      return;
+    }
+
+    console.log('Rendering Depth Chart with data:', JSON.stringify(orderBook, null, 2));
+    console.log('Depth Chart container:', container.outerHTML);
+
+    try {
+      const tabPane = container.closest('.tab-pane');
+      const isTabActive = tabPane.classList.contains('active') && tabPane.classList.contains('show');
+      console.log('Depth Chart tab active:', isTabActive, 'Tab classes:', tabPane.classList.toString());
+      console.log('Container computed style:', window.getComputedStyle(container));
+
+      let containerWidth = container.clientWidth;
+      const containerHeight = 400;
+      console.log('Container dimensions:', { width: containerWidth, height: containerHeight });
+
+      // Fallback width
+      if (containerWidth <= 0) {
+        console.warn('Container width is 0, using fallback width');
+        containerWidth = tabPane.clientWidth || document.querySelector('.tab-content').clientWidth || 800;
+        container.style.width = `${containerWidth}px`;
+      }
+
+      if (containerWidth <= 0 || containerHeight <= 0 || window.getComputedStyle(container).display === 'none') {
+        throw new Error(`Invalid container state: width=${containerWidth}, height=${containerHeight}, display=${window.getComputedStyle(container).display}`);
+      }
+
+      // Clear existing chart
+      if (this.chartInstanceRef.current) {
+        console.log('Removing existing chart instance');
+        try {
+          this.chartInstanceRef.current.remove();
+        } catch (error) {
+          console.error('Error removing existing chart:', error);
+        }
+        this.chartInstanceRef.current = null;
+      }
+
+      // Remove existing resize handler
+      if (this.resizeHandler) {
+        window.removeEventListener('resize', this.resizeHandler);
+        console.log('Previous resize handler removed');
+      }
+
+      const chart = createChart(container, {
+        width: containerWidth,
+        height: containerHeight,
+        layout: { background: { color: '#1a1a1a' }, textColor: '#ffffff' },
+        grid: { vertLines: { color: '#333333' }, horzLines: { color: '#333333' } },
+      });
+      this.chartInstanceRef.current = chart;
+      console.log('Lightweight Charts chart created:', chart);
+
+      // Validate orderBook data
+      const validBids = orderBook.bids.filter(
+        (order) => typeof order.price === 'string' && !isNaN(parseFloat(order.price)) && typeof order.amount === 'string'
+      );
+      const validAsks = orderBook.asks.filter(
+        (order) => typeof order.price === 'string' && !isNaN(parseFloat(order.price)) && typeof order.amount === 'string'
+      );
+      if (!validBids.length || !validAsks.length) {
+        throw new Error(`Invalid order book data: ${validBids.length} valid bids, ${validAsks.length} valid asks`);
+      }
+
+      // Try addAreaSeries, fallback to addLineSeries
+      let bidSeries, askSeries;
+      if (typeof chart.addAreaSeries === 'function') {
+        console.log('Using addAreaSeries for Depth Chart');
+        bidSeries = chart.addAreaSeries({
+          lineColor: '#00ff00',
+          topColor: '#00ff0044',
+          bottomColor: '#00ff0000',
+        });
+        askSeries = chart.addAreaSeries({
+          lineColor: '#ff0000',
+          topColor: '#ff000044',
+          bottomColor: '#ff000000',
+        });
+      } else if (typeof chart.addLineSeries === 'function') {
+        console.warn('Falling back to addLineSeries due to missing addAreaSeries');
+        bidSeries = chart.addLineSeries({ color: '#00ff00' });
+        askSeries = chart.addLineSeries({ color: '#ff0000' });
+        setDepthChartError('Using line chart as fallback due to library issue');
+      } else {
+        throw new Error('No suitable series method available (addAreaSeries or addLineSeries)');
+      }
+
+      // Plot price data
+      bidSeries.setData(
+        validBids.map((order, index) => ({
+          time: index,
+          value: parseFloat(order.price),
+        }))
+      );
+      askSeries.setData(
+        validAsks.map((order, index) => ({
+          time: index,
+          value: parseFloat(order.price),
+        }))
+      );
+
+      chart.timeScale().fitContent();
+
+      // Debounced resize handler
+      this.resizeHandler = () => {
+        if (this.chartInstanceRef.current && container) {
+          const newWidth = container.clientWidth || 800;
+          if (newWidth > 0) {
+            console.log('Resizing chart to width:', newWidth);
+            this.chartInstanceRef.current.resize(newWidth, containerHeight);
+            this.chartInstanceRef.current.timeScale().fitContent();
+          }
+        }
+      };
+      window.addEventListener('resize', this.resizeHandler);
+
+      // Force canvas visibility
+      const canvas = container.querySelector('canvas');
+      if (canvas) {
+        canvas.style.display = 'block';
+        canvas.style.width = '100%';
+        canvas.style.height = '100%';
+        canvas.style.backgroundColor = '#1a1a1a';
+        console.log('Canvas styles applied:', canvas.style.cssText);
+      } else {
+        console.warn('No canvas found in chart container');
+      }
+
+      setDepthChartError('');
+      console.log('Depth Chart rendered successfully');
+
+      /* Static chart for testing (uncomment to test)
+      const chart = createChart(container, {
+        width: containerWidth,
+        height: containerHeight,
+        layout: { background: { color: '#1a1a1a' }, textColor: '#ffffff' },
+        grid: { vertLines: { color: '#333333' }, horzLines: { color: '#333333' } },
+      });
+      this.chartInstanceRef.current = chart;
+      console.log('Static Lightweight Charts chart created:', chart);
+
+      const testSeries = chart.addLineSeries({ color: '#00ff00' });
+      testSeries.setData([
+        { time: 0, value: 100 },
+        { time: 1, value: 150 },
+        { time: 2, value: 120 },
+        { time: 3, value: 180 },
+        { time: 4, value: 140 },
+      ]);
+
+      chart.timeScale().fitContent();
+      setDepthChartError('');
+      console.log('Static Depth Chart rendered successfully');
+      */
+    } catch (error) {
+      console.error('Depth Chart rendering error:', error);
+      setDepthChartError(`Failed to render chart: ${error.message}`);
+    }
+  }
+
+  render() {
+    const { orderBook, depthChartError } = this.props;
+    return (
+      <ErrorBoundary>
+        {depthChartError && <p className="text-danger">{depthChartError}</p>}
+        {orderBook.bids.length === 0 || orderBook.asks.length === 0 ? (
+          <p>Loading depth chart...</p>
+        ) : (
+          <>
+            <div
+              ref={this.chartContainerRef}
+              className="chart-container"
+              style={{ minHeight: '400px', minWidth: '100%' }}
+            />
+            {depthChartError && (
+              <table className="table table-dark mt-3">
+                <thead>
+                  <tr>
+                    <th>Bid Price (USD)</th>
+                    <th>Bid Amount</th>
+                    <th>Ask Price (USD)</th>
+                    <th>Ask Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {orderBook.bids.slice(0, 5).map((bid, index) => (
+                    <tr key={`fallback-${index}`}>
+                      <td className="text-success">{bid.price}</td>
+                      <td>{bid.amount}</td>
+                      <td className="text-danger">{orderBook.asks[index]?.price || 'N/A'}</td>
+                      <td>{orderBook.asks[index]?.amount || 'N/A'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </>
+        )}
+      </ErrorBoundary>
+    );
+  }
+}
+
 const App = () => {
   const [user, setUser] = useState(null);
   const [prices, setPrices] = useState({});
@@ -49,43 +311,77 @@ const App = () => {
   const [tradeType, setTradeType] = useState('buy');
   const [orderType, setOrderType] = useState('market');
   const [limitPrice, setLimitPrice] = useState('');
-  const [stopPrice, setStopPrice] = useState(''); // NEW: For stop-limit orders
+  const [stopPrice, setStopPrice] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [phoneNumber, setPhoneNumber] = useState(''); // NEW: For 2FA
-  const [verificationCode, setVerificationCode] = useState(''); // NEW: For 2FA
-  const [verificationId, setVerificationId] = useState(''); // NEW: For 2FA
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
+  const [verificationId, setVerificationId] = useState('');
   const [loginError, setLoginError] = useState('');
   const [orderBook, setOrderBook] = useState({ bids: [], asks: [] });
-  const [depthData, setDepthData] = useState(null);
-  const [wallet, setWallet] = useState({}); // NEW: Wallet balances
-  const [kycStatus, setKycStatus] = useState('pending'); // NEW: KYC stub
+  const [depthChartError, setDepthChartError] = useState(''); // eslint-disable-line no-unused-vars
+  const [wallet, setWallet] = useState({});
+  const [kycStatus, setKycStatus] = useState('pending');
+  const [activeTab, setActiveTab] = useState('prices');
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
-  const wsRef = useRef(null); // NEW: WebSocket reference
+  const wsRef = useRef(null);
   const isMounted = useRef(true);
 
-  // NEW: Initialize WebSocket for order book
+  // Initialize WebSocket for order book
   useEffect(() => {
     wsRef.current = new WebSocket('ws://localhost:8080');
-    wsRef.current.onopen = () => console.log('WebSocket connected');
+    wsRef.current.onopen = () => console.log('WebSocket connected for Depth Chart');
     wsRef.current.onmessage = (event) => {
-      const { asset, orderBook } = JSON.parse(event.data);
-      if (asset === selectedAsset) {
-        setOrderBook(orderBook);
-        const bidData = orderBook.bids.map(bid => ({ x: parseFloat(bid.price), y: parseFloat(bid.amount) }));
-        const askData = orderBook.asks.map(ask => ({ x: parseFloat(ask.price), y: parseFloat(ask.amount) }));
-        setDepthData({
-          datasets: [
-            { label: 'Bids', data: bidData, borderColor: '#00ff00', backgroundColor: 'rgba(0, 255, 0, 0.3)', stepped: true, fill: true },
-            { label: 'Asks', data: askData, borderColor: '#ff0000', backgroundColor: 'rgba(255, 0, 0, 0.3)', stepped: true, fill: true },
-          ],
-        });
+      try {
+        const data = JSON.parse(event.data);
+        console.log('Received WebSocket data:', JSON.stringify(data, null, 2));
+        if (data && data.asset === selectedAsset && data.orderBook && Array.isArray(data.orderBook.bids) && Array.isArray(data.orderBook.asks)) {
+          setOrderBook(data.orderBook);
+          setDepthChartError('');
+        } else {
+          console.warn('Invalid WebSocket data format or asset mismatch:', JSON.stringify(data, null, 2));
+        }
+      } catch (error) {
+        console.error('WebSocket data parse error:', error);
+        setDepthChartError('Failed to parse WebSocket data');
       }
     };
     wsRef.current.onclose = () => console.log('WebSocket disconnected');
-    return () => wsRef.current.close();
+    wsRef.current.onerror = (error) => {
+      console.error('WebSocket error:', error);
+      setDepthChartError('WebSocket connection failed');
+    };
+    return () => {
+      wsRef.current.close();
+    };
   }, [selectedAsset]);
+
+  // Fallback fetch for order book if WebSocket fails
+  useEffect(() => {
+    let interval;
+    if (!orderBook.bids.length && !orderBook.asks.length) {
+      console.log(`Fetching order book for ${selectedAsset} as fallback`);
+      const fetchOrderBook = async () => {
+        try {
+          const response = await axios.get(`http://localhost:3000/api/orderbook/${selectedAsset}`);
+          console.log(`Fetched order book for ${selectedAsset}:`, response.data);
+          if (response.data.bids && response.data.asks) {
+            setOrderBook(response.data);
+            setDepthChartError('');
+          } else {
+            setDepthChartError('Invalid order book data from API');
+          }
+        } catch (error) {
+          console.error(`Error fetching order book for ${selectedAsset}:`, error.message);
+          setDepthChartError(`Failed to fetch order book: ${error.message}`);
+        }
+      };
+      fetchOrderBook();
+      interval = setInterval(fetchOrderBook, 5000);
+    }
+    return () => clearInterval(interval);
+  }, [selectedAsset, orderBook]);
 
   // Authentication, trades, wallet, and KYC initialization
   useEffect(() => {
@@ -94,7 +390,6 @@ const App = () => {
       console.log('Auth state changed:', currentUser ? currentUser.email : 'No user');
       setUser(currentUser);
       if (currentUser) {
-        // Fetch trades
         const q = query(collection(db, 'trades'), where('userId', '==', currentUser.uid));
         const unsubscribeTrades = onSnapshot(q, (snapshot) => {
           const tradesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -102,7 +397,6 @@ const App = () => {
           setTrades(tradesData);
         });
 
-        // NEW: Fetch wallet
         const walletRef = doc(db, 'wallets', currentUser.uid);
         const walletSnap = await getDoc(walletRef);
         if (walletSnap.exists()) {
@@ -113,7 +407,6 @@ const App = () => {
           setWallet(initialWallet);
         }
 
-        // NEW: Fetch KYC status
         const kycRef = doc(db, 'kyc', currentUser.uid);
         const kycSnap = await getDoc(kycRef);
         if (kycSnap.exists()) {
@@ -151,6 +444,7 @@ const App = () => {
     };
   }, []);
 
+  // Fetch chart data for candlestick chart
   useEffect(() => {
     fetchChartData(selectedAsset, selectedTimeRange);
     return () => {
@@ -161,8 +455,6 @@ const App = () => {
       }
     };
   }, [selectedAsset, selectedTimeRange]);
-
-  // REMOVED: Static order book/depth chart fetch (replaced by WebSocket)
 
   const fetchChartData = async (asset, days) => {
     try {
@@ -209,12 +501,30 @@ const App = () => {
     const asset = e.target.value;
     console.log(`Switching to asset: ${asset}`);
     setSelectedAsset(asset);
+    setOrderBook({ bids: [], asks: [] }); // Reset orderBook to trigger fallback fetch
   };
 
   const handleTimeRangeChange = (e) => {
     const days = e.target.value;
     console.log(`Switching to time range: ${days} days`);
     setSelectedTimeRange(days);
+  };
+
+  const handleTabChange = (tab) => {
+    console.log('handleTabChange called with tab:', tab);
+    setActiveTab(tab);
+    setTimeout(() => {
+      console.log('activeTab state updated to:', tab);
+      const tabs = document.querySelectorAll('.tab-pane');
+      tabs.forEach(t => t.classList.remove('active', 'show'));
+      const tabPane = document.querySelector(`#${tab}`);
+      if (tabPane) {
+        tabPane.classList.add('active', 'show');
+        console.log(`Forced active show classes on #${tab}:`, tabPane.classList.toString());
+      } else {
+        console.log(`Tab element #${tab} not found`);
+      }
+    }, 0);
   };
 
   const handleTrade = async () => {
@@ -238,13 +548,11 @@ const App = () => {
       alert(`Price data for ${selectedAsset} is not available`);
       return;
     }
-    // NEW: Check KYC status
     if (kycStatus !== 'verified') {
       alert('Please complete KYC verification to trade');
       return;
     }
 
-    // NEW: Check wallet balance
     const totalCost = orderType === 'limit' || orderType === 'stop-limit' ? parseFloat(tradeAmount) * parseFloat(limitPrice) : parseFloat(tradeAmount) * prices[selectedAsset].usd;
     if (tradeType === 'buy' && wallet.usd < totalCost) {
       alert('Insufficient USD balance');
@@ -262,7 +570,7 @@ const App = () => {
       orderType,
       amount: parseFloat(tradeAmount),
       price: orderType === 'market' ? prices[selectedAsset].usd : parseFloat(limitPrice),
-      stopPrice: orderType === 'stop-limit' ? parseFloat(stopPrice) : null, // NEW: Stop price
+      stopPrice: orderType === 'stop-limit' ? parseFloat(stopPrice) : null,
       timestamp: Date.now(),
     };
 
@@ -270,7 +578,6 @@ const App = () => {
       console.log('Saving trade to Firestore:', trade);
       await addDoc(collection(db, 'trades'), trade);
 
-      // NEW: Update wallet
       const walletRef = doc(db, 'wallets', user.uid);
       const newWallet = { ...wallet };
       if (tradeType === 'buy') {
@@ -283,7 +590,6 @@ const App = () => {
       await setDoc(walletRef, newWallet);
       setWallet(newWallet);
 
-      // NEW: Send order to WebSocket for limit/stop-limit
       if (orderType !== 'market') {
         wsRef.current.send(JSON.stringify({ asset: selectedAsset, order: { price: trade.price, amount: trade.amount, type: tradeType } }));
       }
@@ -305,7 +611,7 @@ const App = () => {
       const user = userCredential.user;
       if (multiFactor(user).enrolledFactors.length === 0) {
         alert('2FA setup required. Please provide your phone number.');
-        setVerificationId('pending'); // Trigger 2FA setup
+        setVerificationId('pending');
       } else {
         console.log('Login successful:', email);
         setLoginError('');
@@ -318,10 +624,9 @@ const App = () => {
     }
   };
 
-  // NEW: 2FA Setup
   const handle2FASetup = async () => {
     try {
-      const recaptchaVerifier = new RecaptchaVerifier('recaptcha-container', { size: 'invisible' }, auth);
+      const recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', { size: 'invisible' });
       const phoneInfoOptions = {
         phoneNumber,
         session: await multiFactor(user).getSession(),
@@ -335,7 +640,6 @@ const App = () => {
     }
   };
 
-  // NEW: 2FA Verification
   const handle2FAVerify = async () => {
     try {
       const credential = PhoneAuthProvider.credential(verificationId, verificationCode);
@@ -352,7 +656,6 @@ const App = () => {
     }
   };
 
-  // NEW: KYC Submission (Stub)
   const handleKYCSubmit = async () => {
     try {
       const kycRef = doc(db, 'kyc', user.uid);
@@ -430,8 +733,8 @@ const App = () => {
         {user && (
           <div className="header-user">
             <p>{user.email}</p>
-            <p>KYC Status: {kycStatus}</p> {/* NEW: Show KYC status */}
-            <p>USD Balance: ${wallet.usd?.toFixed(2) || '0.00'}</p> {/* NEW: Show USD balance */}
+            <p>KYC Status: {kycStatus}</p>
+            <p>USD Balance: ${wallet.usd?.toFixed(2) || '0.00'}</p>
             <button className="btn btn-signout" onClick={handleSignOut}>
               Sign Out
             </button>
@@ -474,7 +777,6 @@ const App = () => {
                   required
                 />
               </div>
-              {/* NEW: 2FA Inputs */}
               {verificationId && (
                 <>
                   <div className="mb-3">
@@ -512,7 +814,6 @@ const App = () => {
           </div>
         ) : (
           <>
-            {/* NEW: KYC Warning */}
             {kycStatus !== 'verified' && (
               <div className="alert alert-warning">
                 <p>KYC verification required to trade.</p>
@@ -520,34 +821,20 @@ const App = () => {
               </div>
             )}
             <ul className="nav nav-tabs mb-3">
-              <li className="nav-item">
-                <button className="nav-link active" data-bs-toggle="tab" data-bs-target="#prices">Prices</button>
-              </li>
-              <li className="nav-item">
-                <button className="nav-link" data-bs-toggle="tab" data-bs-target="#charts">Charts</button>
-              </li>
-              <li className="nav-item">
-                <button className="nav-link" data-bs-toggle="tab" data-bs-target="#trade">Trade</button>
-              </li>
-              <li className="nav-item">
-                <button className="nav-link" data-bs-toggle="tab" data-bs-target="#history">Trade History</button>
-              </li>
-              <li className="nav-item">
-                <button className="nav-link" data-bs-toggle="tab" data-bs-target="#analytics">Analytics</button>
-              </li>
-              <li className="nav-item">
-                <button className="nav-link" data-bs-toggle="tab" data-bs-target="#orderbook">Order Book</button>
-              </li>
-              <li className="nav-item">
-                <button className="nav-link" data-bs-toggle="tab" data-bs-target="#depth">Depth Chart</button>
-              </li>
-              <li className="nav-item">
-                <button className="nav-link" data-bs-toggle="tab" data-bs-target="#wallet">Wallet</button> {/* NEW: Wallet tab */}
-              </li>
+              {['prices', 'charts', 'trade', 'history', 'analytics', 'orderbook', 'depth', 'wallet'].map(tab => (
+                <li className="nav-item" key={tab}>
+                  <button
+                    className={`nav-link ${activeTab === tab ? 'active' : ''}`}
+                    onClick={() => handleTabChange(tab)}
+                  >
+                    {tab.charAt(0).toUpperCase() + tab.slice(1).replace('orderbook', 'Order Book').replace('depth', 'Depth Chart')}
+                  </button>
+                </li>
+              ))}
             </ul>
 
             <div className="tab-content">
-              <div className="tab-pane fade show active" id="prices">
+              <div className={`tab-pane ${activeTab === 'prices' ? 'active show' : ''}`} id="prices">
                 <h2>Prices</h2>
                 {Object.keys(prices).length === 0 ? (
                   <p>Loading prices...</p>
@@ -562,7 +849,7 @@ const App = () => {
                 )}
               </div>
 
-              <div className="tab-pane fade" id="charts">
+              <div className={`tab-pane ${activeTab === 'charts' ? 'active show' : ''}`} id="charts">
                 <h2>Charts</h2>
                 <div className="mb-3">
                   <select className="form-select d-inline w-auto me-2" value={selectedAsset} onChange={handleAssetChange}>
@@ -635,7 +922,7 @@ const App = () => {
                 </ErrorBoundary>
               </div>
 
-              <div className="tab-pane fade" id="trade">
+              <div className={`tab-pane ${activeTab === 'trade' ? 'active show' : ''}`} id="trade">
                 <h2>Trade</h2>
                 <div className="trade-form">
                   <select className="form-select w-auto" value={selectedAsset} onChange={handleAssetChange}>
@@ -652,7 +939,7 @@ const App = () => {
                   >
                     <option value="market">Market</option>
                     <option value="limit">Limit</option>
-                    <option value="stop-limit">Stop-Limit</option> {/* NEW: Stop-limit option */}
+                    <option value="stop-limit">Stop-Limit</option>
                   </select>
                   <select
                     className="form-select w-auto"
@@ -700,7 +987,7 @@ const App = () => {
                 ) : null}
               </div>
 
-              <div className="tab-pane fade" id="history">
+              <div className={`tab-pane ${activeTab === 'history' ? 'active show' : ''}`} id="history">
                 <h2>Trade History</h2>
                 <button className="btn btn-primary mb-3" onClick={handleExportCSV}>Export to CSV</button>
                 {trades.length === 0 ? (
@@ -717,7 +1004,7 @@ const App = () => {
                 )}
               </div>
 
-              <div className="tab-pane fade" id="analytics">
+              <div className={`tab-pane ${activeTab === 'analytics' ? 'active show' : ''}`} id="analytics">
                 <h2>Analytics</h2>
                 {trades.length === 0 ? (
                   <p>No trades to analyze.</p>
@@ -744,7 +1031,7 @@ const App = () => {
                 )}
               </div>
 
-              <div className="tab-pane fade" id="orderbook">
+              <div className={`tab-pane ${activeTab === 'orderbook' ? 'active show' : ''}`} id="orderbook">
                 <h2>Order Book</h2>
                 <div className="order-book">
                   <div className="order-book-section">
@@ -788,40 +1075,17 @@ const App = () => {
                 </div>
               </div>
 
-              <div className="tab-pane fade" id="depth">
+              <div className={`tab-pane ${activeTab === 'depth' ? 'active show' : ''}`} id="depth">
                 <h2>Depth Chart</h2>
-                <div className="chart-container">
-                  {depthData ? (
-                    <Chart
-                      type="line"
-                      data={depthData}
-                      options={{
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        scales: {
-                          x: {
-                            title: { display: true, text: 'Price (USD)', color: '#ffffff' },
-                            grid: { color: '#333333' },
-                          },
-                          y: {
-                            title: { display: true, text: 'Amount', color: '#ffffff' },
-                            grid: { color: '#333333' },
-                          },
-                        },
-                        plugins: {
-                          legend: { labels: { color: '#ffffff' } },
-                          tooltip: { backgroundColor: '#212121', titleColor: '#ffffff', bodyColor: '#ffffff' },
-                        },
-                      }}
-                    />
-                  ) : (
-                    <p>Loading depth chart...</p>
-                  )}
-                </div>
+                <DepthChart
+                  orderBook={orderBook}
+                  setDepthChartError={setDepthChartError}
+                  isActive={activeTab === 'depth'}
+                  activeTab={activeTab}
+                />
               </div>
 
-              {/* NEW: Wallet Tab */}
-              <div className="tab-pane fade" id="wallet">
+              <div className={`tab-pane ${activeTab === 'wallet' ? 'active show' : ''}`} id="wallet">
                 <h2>Wallet</h2>
                 <ul className="list-group">
                   <li className="list-group-item">USD: ${wallet.usd?.toFixed(2) || '0.00'}</li>

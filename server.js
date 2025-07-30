@@ -25,7 +25,9 @@ const ASSET_MAP = {
 
 if (!COINGECKO_API_KEY) {
   console.error('Error: COINGECKO_API_KEY is not set in .env');
-  process.exit(1);
+  process.exit(
+
+1);
 }
 
 // WebSocket server for real-time order book updates
@@ -41,23 +43,44 @@ const orderBook = {
 
 wss.on('connection', (ws) => {
   console.log('WebSocket client connected');
-  ws.on('message', (message) => {
-    const { asset, order } = JSON.parse(message);
-    if (orderBook[asset]) {
-      if (order.type === 'buy') {
-        orderBook[asset].bids.push(order);
-        orderBook[asset].bids.sort((a, b) => b.price - a.price); // Sort descending
-      } else {
-        orderBook[asset].asks.push(order);
-        orderBook[asset].asks.sort((a, b) => a.price - b.price); // Sort ascending
+  // Broadcast cached order book data every second
+  const interval = setInterval(() => {
+    VALID_ASSETS.forEach((asset) => {
+      const cacheKey = `orderbook_${asset}`;
+      const cachedData = cache.get(cacheKey);
+      if (cachedData) {
+        ws.send(JSON.stringify({ asset, orderBook: cachedData }));
       }
-      wss.clients.forEach((client) => {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(JSON.stringify({ asset, orderBook: orderBook[asset] }));
+    });
+  }, 1000);
+  ws.on('message', (message) => {
+    try {
+      const { asset, order } = JSON.parse(message);
+      if (orderBook[asset]) {
+        if (order.type === 'buy') {
+          orderBook[asset].bids.push(order);
+          orderBook[asset].bids.sort((a, b) => b.price - a.price); // Sort descending
+        } else {
+          orderBook[asset].asks.push(order);
+          orderBook[asset].asks.sort((a, b) => a.price - b.price); // Sort ascending
         }
-      });
+        const cacheKey = `orderbook_${asset}`;
+        cache.put(cacheKey, orderBook[asset], CACHE_DURATION);
+        wss.clients.forEach((client) => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({ asset, orderBook: orderBook[asset] }));
+          }
+        });
+      }
+    } catch (error) {
+      console.error('WebSocket message error:', error);
     }
   });
+  ws.on('close', () => {
+    console.log('WebSocket client disconnected');
+    clearInterval(interval);
+  });
+  ws.on('error', (error) => console.error('WebSocket error:', error));
 });
 
 app.use(cors());
@@ -86,7 +109,7 @@ const fetchWithRetry = async (url, options = {}, retries = MAX_RETRIES, delay = 
         console.error('CoinGecko rate limit exceeded. Waiting before retry.');
       }
       if (attempt < retries) {
-        await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, attempt - 1)));
+        await new Promise((resolve) => setTimeout(resolve, delay * Math.pow(2, attempt - 1)));
       } else {
         throw error;
       }

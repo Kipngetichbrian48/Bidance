@@ -4,6 +4,7 @@
   "license": "MIT",
   "private": true,
   "dependencies": {
+    "@babel/plugin-transform-runtime": "^7.28.0",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
     "@mui/material": "^6.5.0",
@@ -21,6 +22,7 @@
     "cross-env": "^7.0.3",
     "date-fns": "^2.30.0",
     "dotenv": "^17.2.1",
+    "dotenv-webpack": "^8.1.1",
     "firebase": "^10.14.1",
     "lightweight-charts": "4.2.0",
     "memory-cache": "^0.2.0",
@@ -31,7 +33,7 @@
     "react-scripts": "5.0.1",
     "tailwindcss": "^3.4.17",
     "web-vitals": "^4.2.4",
-    "workbox-webpack-plugin": "^7.1.0"
+    "workbox-webpack-plugin": "^7.3.0"
   },
   "devDependencies": {
     "@babel/core": "^7.28.0",

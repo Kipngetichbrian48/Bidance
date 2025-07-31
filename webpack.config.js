@@ -1,8 +1,7 @@
 const path = require('path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
-const { EnvironmentPlugin } = require('webpack');
 const WorkboxPlugin = require('workbox-webpack-plugin');
-require('dotenv').config();
+const Dotenv = require('dotenv-webpack');
 
 module.exports = {
   mode: 'production',
@@ -10,17 +9,9 @@ module.exports = {
   output: {
     path: path.resolve(__dirname, 'dist'),
     filename: 'bundle.[contenthash].js',
+    chunkFilename: '[name].[contenthash].chunk.js', // Support lazy-loaded chunks
     publicPath: '/',
     clean: true,
-  },
-  devServer: {
-    port: 3001,
-    hot: true,
-    open: true,
-    historyApiFallback: true,
-    static: {
-      directory: path.join(__dirname, 'public'),
-    },
   },
   module: {
     rules: [
@@ -31,12 +22,17 @@ module.exports = {
           loader: 'babel-loader',
           options: {
             presets: ['@babel/preset-env', '@babel/preset-react'],
+            plugins: ['@babel/plugin-transform-runtime'],
           },
         },
       },
       {
         test: /\.css$/,
         use: ['style-loader', 'css-loader', 'postcss-loader'],
+      },
+      {
+        test: /\.(png|svg|jpg|jpeg|gif|ico)$/,
+        type: 'asset/resource',
       },
     ],
   },
@@ -45,23 +41,37 @@ module.exports = {
       template: './public/index.html',
       favicon: './public/favicon.ico',
     }),
-    new EnvironmentPlugin({
-      REACT_APP_FIREBASE_API_KEY: null,
-      REACT_APP_FIREBASE_AUTH_DOMAIN: null,
-      REACT_APP_FIREBASE_PROJECT_ID: null,
-      REACT_APP_FIREBASE_STORAGE_BUCKET: null,
-      REACT_APP_FIREBASE_MESSAGING_SENDER_ID: null,
-      REACT_APP_FIREBASE_APP_ID: null,
-      REACT_APP_FIREBASE_MEASUREMENT_ID: null,
-      COINGECKO_API_KEY: null,
-    }),
     new WorkboxPlugin.GenerateSW({
       clientsClaim: true,
       skipWaiting: true,
-      maximumFileSizeToCacheInBytes: 10000000, // 10MB for bundle.js
+      maximumFileSizeToCacheInBytes: 5000000,
     }),
+    new Dotenv(),
   ],
+  optimization: {
+    splitChunks: {
+      chunks: 'all', // Split vendor and common code
+      cacheGroups: {
+        vendors: {
+          test: /[\\/]node_modules[\\/]/,
+          name: 'vendors',
+          chunks: 'all',
+        },
+        react: {
+          test: /[\\/]node_modules[\\/](react|react-dom|react-chartjs-2|chart.js|lightweight-charts)[\\/]/,
+          name: 'react',
+          chunks: 'all',
+        },
+      },
+    },
+  },
   resolve: {
     extensions: ['.js', '.jsx'],
+  },
+  devServer: {
+    static: path.join(__dirname, 'public'),
+    compress: true,
+    port: 3000,
+    historyApiFallback: true,
   },
 };

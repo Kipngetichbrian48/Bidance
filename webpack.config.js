@@ -1,15 +1,17 @@
 const path = require('path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const { EnvironmentPlugin } = require('webpack');
-require('dotenv').config(); // Load .env file
+const WorkboxPlugin = require('workbox-webpack-plugin');
+require('dotenv').config();
 
 module.exports = {
-  mode: 'development',
+  mode: 'production',
   entry: './src/index.js',
   output: {
     path: path.resolve(__dirname, 'dist'),
-    filename: 'bundle.js',
+    filename: 'bundle.[contenthash].js',
     publicPath: '/',
+    clean: true,
   },
   devServer: {
     port: 3001,
@@ -18,13 +20,6 @@ module.exports = {
     historyApiFallback: true,
     static: {
       directory: path.join(__dirname, 'public'),
-    },
-    setupMiddlewares: (middlewares, devServer) => {
-      if (!devServer) {
-        throw new Error('webpack-dev-server is not defined');
-      }
-      console.log('Setting up Webpack Dev Server middlewares');
-      return middlewares;
     },
   },
   module: {
@@ -59,6 +54,11 @@ module.exports = {
       REACT_APP_FIREBASE_APP_ID: null,
       REACT_APP_FIREBASE_MEASUREMENT_ID: null,
       COINGECKO_API_KEY: null,
+    }),
+    new WorkboxPlugin.GenerateSW({
+      clientsClaim: true,
+      skipWaiting: true,
+      maximumFileSizeToCacheInBytes: 10000000, // 10MB for bundle.js
     }),
   ],
   resolve: {

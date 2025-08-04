@@ -2,10 +2,11 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { auth } from './firebase';
 import axios from 'axios';
 import { Container, Nav, Navbar, NavDropdown, Form, Button, Alert } from 'react-bootstrap';
-import Chart from './chart';
+import Chart from './chart'; // Case-sensitive
 import DepthChart from './DepthChart';
 import PieChart from './PieChart';
 import './App.css';
+import debounce from 'lodash/debounce';
 
 const App = () => {
   const [user, setUser] = useState(null);
@@ -14,86 +15,116 @@ const App = () => {
   const [asset, setAsset] = useState('bitcoin');
   const [days, setDays] = useState('7');
   const [ohlcData, setOhlcData] = useState([]);
-  const [orderBook, setOrderBook] = useState(null);
+  const [orderBook, setOrderBook] = useState({ bids: [], asks: [] });
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
-  const [kycData, setKycData] = useState({ name: '', idNumber: '' });
+  const [kycData, setKycData] = useState({ name: '', idNumber: '', address: '', documentType: 'Aadhaar' });
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [kycStatus, setKycStatus] = useState('pending');
 
-  const fetchData = useCallback(async () => {
-    try {
-      console.log('App.js: Fetching prices from /api/price');
-      const priceResponse = await axios.get('http://localhost:3000/api/price', {
-        headers: { Authorization: `Bearer ${await auth.currentUser.getIdToken()}` },
-      });
-      console.log('App.js: Prices fetched:', priceResponse.data);
-      setPrices(priceResponse.data);
-
-      console.log('App.js: Fetching order book for', asset);
-      const orderBookResponse = await axios.get('http://localhost:3000/api/orderbook', {
-        params: { asset },
-        headers: { Authorization: `Bearer ${await auth.currentUser.getIdToken()}` },
-      });
-      console.log('App.js: Order book fetched:', orderBookResponse.data);
-      setOrderBook(orderBookResponse.data);
-
-      console.log('App.js: Fetching OHLC data for', asset, `(${days} days)`);
-      const ohlcResponse = await axios.get('http://localhost:3000/api/ohlc', {
-        params: { asset, days },
-        headers: { Authorization: `Bearer ${await auth.currentUser.getIdToken()}` },
-      });
-      console.log('App.js: OHLC data fetched:', ohlcResponse.data.length, 'entries');
-      setOhlcData(ohlcResponse.data);
-    } catch (err) {
-      console.error('App.js: Error fetching data:', err.message);
-      if (err.response?.status === 500) {
-        if (err.config.url.includes('/api/price')) {
-          console.error('App.js: Error fetching prices: Request failed with status code 500');
-          setError('Failed to fetch prices. Please try again.');
-        } else if (err.config.url.includes('/api/orderbook')) {
-          console.error('App.js: Order book fetch error: Request failed with status code 500');
-          setError('Failed to fetch order book. Please try again.');
-        } else if (err.config.url.includes('/api/ohlc')) {
-          console.error('App.js: Error fetching OHLC data for', asset, ': Request failed with status code 500');
-          setError('Failed to fetch chart data. Please try again.');
-        }
-      } else {
-        setError('Error fetching data. Please try again.');
-      }
-    }
-  }, [asset, days]); // Dependencies for fetchData
-
+  // Check auth state and KYC status
   useEffect(() => {
     console.log('App.js: Checking auth state');
-    const unsubscribe = auth.onAuthStateChanged(user => {
-      console.log('App.js: Auth state changed:', user ? user.email : null);
+    const unsubscribe = auth.onAuthStateChanged(async (user) => {
       if (user) {
         setUser(user);
-        console.log('App.js: User authenticated, fetching data');
-        fetchData();
+        const idTokenResult = await user.getIdTokenResult(true); // Force refresh for claims
+        const kycVerified = idTokenResult.claims.kycVerified || false;
+        setKycStatus(kycVerified ? 'verified' : 'pending');
+        console.log('App.js: User authenticated:', user.email, 'KYC Status:', kycVerified);
       } else {
         setUser(null);
         setPrices({});
         setOhlcData([]);
-        setOrderBook(null);
+        setOrderBook({ bids: [], asks: [] });
+        setKycStatus('pending');
+        console.log('App.js: No user logged in');
       }
     });
-
     return () => {
       console.log('App.js: Cleaning up auth subscription');
       unsubscribe();
     };
-  }, [fetchData]); // Add fetchData to dependency array
+  }, []);
 
-  const handleLogin = async e => {
+  // Fetch price, OHLC, and order book data concurrently
+  const fetchData = useCallback(async () => {
+    if (!user) return;
+    const token = await user.getIdToken();
+    try {
+      console.log('App.js: Fetching data for', asset);
+      const [priceResponse, ohlcResponse, orderBookResponse] = await Promise.all([
+        axios.get('http://localhost:3000/api/price', {
+          headers: { Authorization: `Bearer ${token}` },
+        }).catch((err) => {
+          console.error('App.js: Price fetch error:', err.message);
+          throw err;
+        }),
+        axios.get('http://localhost:3000/api/ohlc', {
+          params: { asset, days },
+          headers: { Authorization: `Bearer ${token}` },
+        }).catch((err) => {
+          console.error('App.js: OHLC fetch error for', asset, ':', err.message);
+          throw err;
+        }),
+        axios.get('http://localhost:3000/api/orderbook', {
+          params: { asset },
+          headers: { Authorization: `Bearer ${token}` },
+        }).catch((err) => {
+          console.error('App.js: Order book fetch error for', asset, ':', err.message);
+          throw err;
+        }),
+      ]);
+
+      setPrices(priceResponse.data);
+      setOhlcData(ohlcResponse.data);
+      setOrderBook(orderBookResponse.data);
+      console.log('App.js: Data fetched:', {
+        prices: priceResponse.data,
+        ohlcDataLength: ohlcResponse.data.length,
+        orderBook: orderBookResponse.data,
+      });
+      setError('');
+    } catch (err) {
+      console.error('App.js: Error fetching data:', err.message);
+      if (err.response?.status === 500) {
+        setError('Server error. Please try again later.');
+      } else if (err.response?.status === 429) {
+        setError('Rate limit exceeded. Please wait and try again.');
+      } else {
+        setError('Error fetching data. Please try again.');
+      }
+    }
+  }, [user, asset, days]);
+
+  // Fetch data on user or asset/days change
+  useEffect(() => {
+    if (user) {
+      fetchData();
+      const interval = setInterval(fetchData, 60000); // Refresh every 60s
+      return () => clearInterval(interval);
+    }
+  }, [user, fetchData]);
+
+  // Debounced asset change handler
+  const handleAssetChange = debounce((newAsset) => {
+    console.log('App.js: Changing asset to:', newAsset);
+    setAsset(newAsset);
+  }, 500);
+
+  const handleDaysChange = (newDays) => {
+    console.log('App.js: Changing days to:', newDays);
+    setDays(newDays);
+  };
+
+  const handleLogin = async (e) => {
     e.preventDefault();
     try {
       await auth.signInWithEmailAndPassword(email, password);
       console.log('App.js: User logged in:', email);
       setError('');
       setSuccess('Login successful!');
-      fetchData();
     } catch (err) {
       console.error('App.js: Login error:', err.message);
       setError('Login failed: ' + err.message);
@@ -114,48 +145,43 @@ const App = () => {
     }
   };
 
-  const handleKycSubmit = async e => {
+  const handleKycSubmit = async (e) => {
     e.preventDefault();
+    if (!user) {
+      setError('Please log in to submit KYC');
+      return;
+    }
     try {
-      await axios.post(
+      const token = await user.getIdToken();
+      const response = await axios.post(
         'http://localhost:3000/api/kyc',
         kycData,
         {
-          headers: { Authorization: `Bearer ${await auth.currentUser.getIdToken()}` },
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         }
       );
-      console.log('App.js: KYC submitted successfully:', kycData);
-      setSuccess('KYC submitted successfully!');
+      console.log('App.js: KYC submitted successfully:', response.data);
+      setSuccess(response.data.message);
+      setKycStatus(response.data.status);
+      setKycData({ name: '', idNumber: '', address: '', documentType: 'Aadhaar' });
       setError('');
-      setKycData({ name: '', idNumber: '' });
     } catch (err) {
       console.error('App.js: KYC submission error:', err.message);
-      setError('KYC submission failed: ' + err.message);
+      setError(err.response?.data?.error || 'KYC submission failed');
       setSuccess('');
     }
   };
 
-  const handleTabChange = tab => {
-    console.log('App.js: Switching to tab:', tab);
-    setActiveTab(tab);
-  };
-
-  const handleAssetChange = newAsset => {
-    console.log('App.js: Changing asset to:', newAsset);
-    setAsset(newAsset);
-    // fetchData is called via useEffect dependency on asset
-  };
-
-  const handleDaysChange = newDays => {
-    console.log('App.js: Changing days to:', newDays);
-    setDays(newDays);
-    // fetchData is called via useEffect dependency on days
+  const handleKycInputChange = (e) => {
+    const { name, value } = e.target;
+    setKycData((prev) => ({ ...prev, [name]: value }));
   };
 
   const clearCache = async () => {
     try {
+      const token = await user.getIdToken();
       await axios.get('http://localhost:3000/api/clear-cache', {
-        headers: { Authorization: `Bearer ${await auth.currentUser.getIdToken()}` },
+        headers: { Authorization: `Bearer ${token}` },
       });
       console.log('App.js: Cache cleared');
       setSuccess('Cache cleared successfully!');
@@ -212,7 +238,7 @@ const App = () => {
     <div className="prices-tab">
       <h3>Market Prices</h3>
       <ul className="price-list">
-        {Object.keys(prices).map(coin => (
+        {Object.keys(prices).map((coin) => (
           <li key={coin}>
             {coin.toUpperCase()}: ${prices[coin]?.usd || 'N/A'}
           </li>
@@ -243,31 +269,67 @@ const App = () => {
   const WalletTab = () => (
     <div className="wallet-tab">
       <h3>Wallet</h3>
-      <Form onSubmit={handleKycSubmit} className="login-form">
-        <Form.Group className="mb-3">
-          <Form.Label>Name</Form.Label>
-          <Form.Control
-            type="text"
-            value={kycData.name}
-            onChange={e => setKycData({ ...kycData, name: e.target.value })}
-            placeholder="Enter your name"
-          />
-        </Form.Group>
-        <Form.Group className="mb-3">
-          <Form.Label>ID Number</Form.Label>
-          <Form.Control
-            type="text"
-            value={kycData.idNumber}
-            onChange={e => setKycData({ ...kycData, idNumber: e.target.value })}
-            placeholder="Enter ID number"
-          />
-        </Form.Group>
-        <Button variant="primary" type="submit">
-          Submit KYC
-        </Button>
-      </Form>
-      {success && <Alert variant="success">{success}</Alert>}
-      {error && <Alert variant="danger">{error}</Alert>}
+      {kycStatus !== 'verified' ? (
+        <Form onSubmit={handleKycSubmit} className="kyc-form">
+          <Form.Group className="mb-3">
+            <Form.Label>Full Name</Form.Label>
+            <Form.Control
+              type="text"
+              name="name"
+              value={kycData.name}
+              onChange={handleKycInputChange}
+              placeholder="Enter your full name"
+              required
+            />
+          </Form.Group>
+          <Form.Group className="mb-3">
+            <Form.Label>ID Number</Form.Label>
+            <Form.Control
+              type="text"
+              name="idNumber"
+              value={kycData.idNumber}
+              onChange={handleKycInputChange}
+              placeholder="Enter ID number (Aadhaar, PAN, etc.)"
+              required
+            />
+          </Form.Group>
+          <Form.Group className="mb-3">
+            <Form.Label>Address</Form.Label>
+            <Form.Control
+              type="text"
+              name="address"
+              value={kycData.address}
+              onChange={handleKycInputChange}
+              placeholder="Enter your address"
+              required
+            />
+          </Form.Group>
+          <Form.Group className="mb-3">
+            <Form.Label>Document Type</Form.Label>
+            <Form.Select
+              name="documentType"
+              value={kycData.documentType}
+              onChange={handleKycInputChange}
+              required
+            >
+              <option value="Aadhaar">Aadhaar</option>
+              <option value="PAN">PAN</option>
+              <option value="Passport">Passport</option>
+              <option value="Driver’s License">Driver’s License</option>
+            </Form.Select>
+          </Form.Group>
+          <Button variant="primary" type="submit">
+            Submit KYC
+          </Button>
+          {success && <Alert variant="success" className="mt-3">{success}</Alert>}
+          {error && <Alert variant="danger" className="mt-3">{error}</Alert>}
+        </Form>
+      ) : (
+        <div>
+          <p>Wallet access granted! KYC Status: {kycStatus}</p>
+          <p>Balance: $0.00 (Placeholder)</p>
+        </div>
+      )}
     </div>
   );
 
@@ -277,16 +339,6 @@ const App = () => {
       <PieChart data={prices} />
     </div>
   );
-
-  console.log('App.js: Rendering with state:', {
-    user: !!user,
-    activeTab,
-    prices,
-    ohlcDataLength: ohlcData.length,
-    orderBook,
-    asset,
-    days,
-  });
 
   if (!user) {
     return (
@@ -298,7 +350,7 @@ const App = () => {
             <Form.Control
               type="email"
               value={email}
-              onChange={e => setEmail(e.target.value)}
+              onChange={(e) => setEmail(e.target.value)}
               placeholder="Enter email"
             />
           </Form.Group>
@@ -307,16 +359,16 @@ const App = () => {
             <Form.Control
               type="password"
               value={password}
-              onChange={e => setPassword(e.target.value)}
+              onChange={(e) => setPassword(e.target.value)}
               placeholder="Enter password"
             />
           </Form.Group>
           <Button variant="primary" type="submit">
             Login
           </Button>
+          {error && <Alert variant="danger" className="mt-3">{error}</Alert>}
+          {success && <Alert variant="success" className="mt-3">{success}</Alert>}
         </Form>
-        {error && <Alert variant="danger">{error}</Alert>}
-        {success && <Alert variant="success">{success}</Alert>}
       </Container>
     );
   }
@@ -337,7 +389,7 @@ const App = () => {
         <Nav
           variant="tabs"
           activeKey={activeTab}
-          onSelect={handleTabChange}
+          onSelect={(tab) => setActiveTab(tab)}
           className="nav-tabs"
         >
           <Nav.Item>

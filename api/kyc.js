@@ -23,34 +23,61 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  const { name, idNumber, address, documentType } = req.body;
   const token = req.headers.authorization?.split('Bearer ')[1];
+
   if (!token) {
     console.error('No authorization token provided');
     return res.status(401).json({ error: 'Unauthorized: No token provided' });
   }
 
+  // Validate required fields
+  if (!name || !idNumber || !address || !documentType) {
+    console.error('Missing required KYC fields:', { name, idNumber, address, documentType });
+    return res.status(400).json({ error: 'Missing required fields: name, idNumber, address, documentType' });
+  }
+
+  // Basic validation
+  if (name.length < 2) {
+    console.error('Invalid name length:', name);
+    return res.status(400).json({ error: 'Name must be at least 2 characters' });
+  }
+  if (idNumber.length < 8) {
+    console.error('Invalid ID number length:', idNumber);
+    return res.status(400).json({ error: 'ID number must be at least 8 characters' });
+  }
+  if (address.length < 5) {
+    console.error('Invalid address length:', address);
+    return res.status(400).json({ error: 'Address must be at least 5 characters' });
+  }
+  if (!['Aadhaar', 'PAN', 'Passport', 'Driver’s License'].includes(documentType)) {
+    console.error('Invalid document type:', documentType);
+    return res.status(400).json({ error: 'Invalid document type' });
+  }
+
   try {
     const decodedToken = await admin.auth().verifyIdToken(token);
-    console.log('Token verified successfully for user:', decodedToken.uid);
-
-    const { name, idNumber } = req.body;
-    if (!name || !idNumber) {
-      console.error('Missing name or idNumber in request body');
-      return res.status(400).json({ error: 'Name and ID number are required' });
-    }
+    const uid = decodedToken.uid;
+    console.log('Token verified successfully for user:', uid);
 
     // Store KYC data in Firestore
     const kycData = {
-      userId: decodedToken.uid,
+      userId: uid,
       name,
       idNumber,
+      address,
+      documentType,
+      status: 'verified', // Mock verification
       submittedAt: admin.firestore.FieldValue.serverTimestamp(),
-      status: 'pending',
     };
 
-    await db.collection('kycSubmissions').doc(decodedToken.uid).set(kycData);
-    console.log('KYC data stored for user:', decodedToken.uid);
-    res.status(200).json({ message: 'KYC submitted successfully', kycData });
+    await db.collection('kycSubmissions').doc(uid).set(kycData);
+
+    // Set custom claim for wallet access
+    await admin.auth().setCustomUserClaims(uid, { kycVerified: true });
+
+    console.log('KYC data stored and status updated for user:', uid, kycData);
+    res.status(200).json({ message: 'KYC submitted successfully', status: 'verified' });
   } catch (error) {
     console.error('Error processing KYC:', error.message);
     res.status(500).json({ error: 'Failed to process KYC', details: error.message });

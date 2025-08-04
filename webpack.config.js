@@ -4,13 +4,13 @@ const WorkboxPlugin = require('workbox-webpack-plugin');
 const Dotenv = require('dotenv-webpack');
 
 module.exports = {
-  mode: 'production',
+  mode: 'development',
   entry: './src/index.js',
   output: {
     path: path.resolve(__dirname, 'dist'),
     filename: 'bundle.[contenthash].js',
-    chunkFilename: '[name].[contenthash].chunk.js', // Support lazy-loaded chunks
-    publicPath: '/',
+    chunkFilename: '[name].[contenthash].chunk.js',
+    publicPath: '/', // Serve bundles from root
     clean: true,
   },
   module: {
@@ -28,7 +28,7 @@ module.exports = {
       },
       {
         test: /\.css$/,
-        use: ['style-loader', 'css-loader', 'postcss-loader'],
+        use: ['style-loader', 'css-loader'],
       },
       {
         test: /\.(png|svg|jpg|jpeg|gif|ico)$/,
@@ -44,13 +44,13 @@ module.exports = {
     new WorkboxPlugin.GenerateSW({
       clientsClaim: true,
       skipWaiting: true,
-      maximumFileSizeToCacheInBytes: 5000000,
+      maximumFileSizeToCacheInBytes: 6000000, // Increase to 6 MB
     }),
     new Dotenv(),
   ],
   optimization: {
     splitChunks: {
-      chunks: 'all', // Split vendor and common code
+      chunks: 'all',
       cacheGroups: {
         vendors: {
           test: /[\\/]node_modules[\\/]/,
@@ -69,9 +69,14 @@ module.exports = {
     extensions: ['.js', '.jsx'],
   },
   devServer: {
-    static: path.join(__dirname, 'public'),
+    static: {
+      directory: path.join(__dirname, 'public'),
+    },
     compress: true,
     port: 3000,
-    historyApiFallback: true,
+    historyApiFallback: {
+      index: '/index.html', // Fallback to index.html for SPA
+    },
+    hot: true,
   },
 };

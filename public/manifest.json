@@ -1,11 +1,6 @@
 {
-  "name": "Bidance",
   "short_name": "Bidance",
-  "start_url": "/",
-  "display": "standalone",
-  "background_color": "#1a1a1a",
-  "theme_color": "#f0b90b",
-  "description": "Bidance - Cryptocurrency Trading Platform",
+  "name": "Bidance Trading Platform",
   "icons": [
     {
       "src": "/favicon.ico",
@@ -22,5 +17,9 @@
       "type": "image/png",
       "sizes": "512x512"
     }
-  ]
+  ],
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#000000",
+  "background_color": "#ffffff"
 }

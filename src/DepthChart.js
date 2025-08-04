@@ -1,254 +1,139 @@
-import React, { Component } from 'react';
-import { createChart } from 'lightweight-charts'; // eslint-disable-line no-unused-vars
+import React, { useEffect, useRef } from 'react';
+import { createChart } from 'lightweight-charts';
 
-class ErrorBoundary extends Component { // eslint-disable-line no-unused-vars
-  state = { hasError: false, error: null };
+const DepthChart = ({ data, asset }) => {
+  const chartContainerRef = useRef(null);
+  const chartRef = useRef(null);
+  const bidsSeriesRef = useRef(null);
+  const asksSeriesRef = useRef(null);
 
-  static getDerivedStateFromError(error) {
-    return { hasError: true, error };
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return <p className="text-danger">Chart rendering failed: {this.state.error.message}</p>;
-    }
-    return this.props.children;
-  }
-}
-
-class DepthChart extends Component {
-  constructor(props) {
-    super(props);
-    this.chartContainerRef = React.createRef();
-    this.chartInstanceRef = React.createRef(null);
-    this.resizeHandler = null;
-  }
-
-  componentDidMount() {
-    console.log('DepthChart componentDidMount');
-    this.renderChart();
-  }
-
-  componentDidUpdate(prevProps) {
-    if (prevProps.orderBook !== this.props.orderBook || prevProps.isActive !== this.props.isActive) {
-      console.log('DepthChart componentDidUpdate triggered:', {
-        orderBookChanged: prevProps.orderBook !== this.props.orderBook,
-        isActiveChanged: prevProps.isActive !== this.props.isActive,
-        isActive: this.props.isActive,
-        activeTab: this.props.activeTab,
+  useEffect(() => {
+    console.log('DepthChart.js: Received data for', asset, ':', data);
+    if (!chartContainerRef.current || !data || !Array.isArray(data.bids) || !Array.isArray(data.asks)) {
+      console.log('DepthChart.js: Missing container or invalid data:', {
+        bids: Array.isArray(data?.bids),
+        asks: Array.isArray(data?.asks),
       });
-      this.renderChart();
-    }
-  }
-
-  componentWillUnmount() {
-    console.log('DepthChart componentWillUnmount');
-    if (this.chartInstanceRef.current) {
-      try {
-        this.chartInstanceRef.current.remove();
-        console.log('Chart instance removed');
-      } catch (error) {
-        console.error('Error removing chart instance:', error);
-      }
-      this.chartInstanceRef.current = null;
-    }
-    if (this.resizeHandler) {
-      window.removeEventListener('resize', this.resizeHandler);
-      console.log('Resize handler removed');
-    }
-  }
-
-  renderChart() {
-    const { orderBook, setDepthChartError, isActive, activeTab } = this.props;
-    const container = this.chartContainerRef.current;
-
-    console.log('DepthChart renderChart props:', { isActive, activeTab, hasContainer: !!container, hasData: !!orderBook?.bids?.length && !!orderBook?.asks?.length });
-
-    if (!container || !isActive) {
-      console.log('Skipping Depth Chart render: Missing container or tab not active', { container: !!container, isActive });
       return;
     }
-
-    if (!orderBook?.bids?.length || !orderBook?.asks?.length) {
-      console.log('Skipping Depth Chart render: No valid order book data');
-      setDepthChartError('No order book data available');
-      return;
-    }
-
-    console.log('Rendering Depth Chart with data:', JSON.stringify(orderBook, null, 2));
-    console.log('Depth Chart container:', container.outerHTML);
 
     try {
-      const tabPane = container.closest('.tab-pane');
-      const isTabActive = tabPane.classList.contains('active') && tabPane.classList.contains('show');
-      console.log('Depth Chart tab active:', isTabActive, 'Tab classes:', tabPane.classList.toString());
-      console.log('Container computed style:', window.getComputedStyle(container));
-
-      let containerWidth = container.clientWidth;
-      const containerHeight = 400;
-      console.log('Container dimensions:', { width: containerWidth, height: containerHeight });
-
-      // Fallback width
-      if (containerWidth <= 0) {
-        console.warn('Container width is 0, using fallback width');
-        containerWidth = tabPane.clientWidth || document.querySelector('.tab-content').clientWidth || 800;
-        container.style.width = `${containerWidth}px`;
+      console.log('DepthChart.js: Initializing chart with', data.bids.length, 'bids,', data.asks.length, 'asks');
+      // Clean up existing chart
+      if (chartRef.current) {
+        chartRef.current.remove();
+        chartRef.current = null;
+        bidsSeriesRef.current = null;
+        asksSeriesRef.current = null;
+        console.log('DepthChart.js: Previous chart cleaned up');
       }
 
-      if (containerWidth <= 0 || containerHeight <= 0 || window.getComputedStyle(container).display === 'none') {
-        throw new Error(`Invalid container state: width=${containerWidth}, height=${containerHeight}, display=${window.getComputedStyle(container).display}`);
-      }
-
-      // Clear existing chart
-      if (this.chartInstanceRef.current) {
-        console.log('Removing existing chart instance');
-        try {
-          this.chartInstanceRef.current.remove();
-        } catch (error) {
-          console.error('Error removing existing chart:', error);
-        }
-        this.chartInstanceRef.current = null;
-      }
-
-      // Remove existing resize handler
-      if (this.resizeHandler) {
-        window.removeEventListener('resize', this.resizeHandler);
-        console.log('Previous resize handler removed');
-      }
-
-      const chart = createChart(container, {
-        width: containerWidth,
-        height: containerHeight,
-        layout: { background: { color: '#1a1a1a' }, textColor: '#ffffff' },
-        grid: { vertLines: { color: '#333333' }, horzLines: { color: '#333333' } },
+      chartRef.current = createChart(chartContainerRef.current, {
+        width: chartContainerRef.current.clientWidth || 600,
+        height: 400,
+        layout: {
+          background: { type: 'solid', color: '#1a1a1a' },
+          textColor: '#ffffff',
+          fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+        },
+        grid: {
+          vertLines: { color: '#333333' },
+          horzLines: { color: '#333333' },
+        },
+        rightPriceScale: {
+          borderColor: '#333333',
+          autoScale: true,
+          scaleMargins: { top: 0.1, bottom: 0.1 },
+        },
+        timeScale: {
+          borderColor: '#333333',
+          fixLeftEdge: false,
+          fixRightEdge: false,
+        },
+        handleScroll: {
+          mouseWheel: true,
+          pressedMouseMove: true,
+        },
+        handleScale: {
+          mouseWheel: true,
+          pinch: true,
+        },
       });
-      this.chartInstanceRef.current = chart;
-      console.log('Lightweight Charts chart created:', chart);
 
-      // Validate orderBook data
-      const validBids = orderBook.bids.filter(
-        (order) => typeof order.price === 'string' && !isNaN(parseFloat(order.price)) && typeof order.amount === 'string'
-      );
-      const validAsks = orderBook.asks.filter(
-        (order) => typeof order.price === 'string' && !isNaN(parseFloat(order.price)) && typeof order.amount === 'string'
-      );
-      if (!validBids.length || !validAsks.length) {
-        throw new Error(`Invalid order book data: ${validBids.length} valid bids, ${validAsks.length} valid asks`);
+      bidsSeriesRef.current = chartRef.current.addAreaSeries({
+        topColor: 'rgba(0, 255, 0, 0.3)',
+        bottomColor: 'rgba(0, 255, 0, 0.04)',
+        lineColor: '#00ff00',
+        lineWidth: 2,
+      });
+
+      asksSeriesRef.current = chartRef.current.addAreaSeries({
+        topColor: 'rgba(255, 0, 0, 0.3)',
+        bottomColor: 'rgba(255, 0, 0, 0.04)',
+        lineColor: '#ff0000',
+        lineWidth: 2,
+      });
+
+      // Client-side sorting with precision handling
+      const bidsData = data.bids
+        .map(([price, amount]) => ({
+          time: Number(parseFloat(price).toFixed(8)),
+          value: parseFloat(amount),
+        }))
+        .filter(item => Number.isFinite(item.time) && Number.isFinite(item.value))
+        .sort((a, b) => a.time - b.time); // Ascending for bids
+
+      const asksData = data.asks
+        .map(([price, amount]) => ({
+          time: Number(parseFloat(price).toFixed(8)),
+          value: parseFloat(amount),
+        }))
+        .filter(item => Number.isFinite(item.time) && Number.isFinite(item.value))
+        .sort((a, b) => a.time - b.time); // Ascending for asks
+
+      if (bidsData.length === 0 || asksData.length === 0) {
+        console.log('DepthChart.js: No valid data after filtering:', { bidsData, asksData });
+        return;
       }
 
-      // Try addAreaSeries, fallback to addLineSeries
-      let bidSeries, askSeries;
-      if (typeof chart.addAreaSeries === 'function') {
-        console.log('Using addAreaSeries for Depth Chart');
-        bidSeries = chart.addAreaSeries({
-          lineColor: '#00ff00',
-          topColor: '#00ff0044',
-          bottomColor: '#00ff0000',
-        });
-        askSeries = chart.addAreaSeries({
-          lineColor: '#ff0000',
-          topColor: '#ff000044',
-          bottomColor: '#ff000000',
-        });
-      } else if (typeof chart.addLineSeries === 'function') {
-        console.warn('Falling back to addLineSeries due to missing addAreaSeries');
-        bidSeries = chart.addLineSeries({ color: '#00ff00' });
-        askSeries = chart.addLineSeries({ color: '#ff0000' });
-        setDepthChartError('Using line chart as fallback due to library issue');
-      } else {
-        throw new Error('No suitable series method available (addAreaSeries or addLineSeries)');
-      }
+      bidsSeriesRef.current.setData(bidsData);
+      asksSeriesRef.current.setData(asksData);
+      console.log('DepthChart.js: Depth chart rendered successfully:', {
+        bidsSample: bidsData.slice(0, 2),
+        asksSample: asksData.slice(0, 2),
+      });
 
-      // Plot price data
-      bidSeries.setData(
-        validBids.map((order, index) => ({
-          time: index,
-          value: parseFloat(order.price),
-        }))
-      );
-      askSeries.setData(
-        validAsks.map((order, index) => ({
-          time: index,
-          value: parseFloat(order.price),
-        }))
-      );
-
-      chart.timeScale().fitContent();
-
-      // Debounced resize handler
-      this.resizeHandler = () => {
-        if (this.chartInstanceRef.current && container) {
-          const newWidth = container.clientWidth || 800;
-          if (newWidth > 0) {
-            console.log('Resizing chart to width:', newWidth);
-            this.chartInstanceRef.current.resize(newWidth, containerHeight);
-            this.chartInstanceRef.current.timeScale().fitContent();
-          }
+      const handleResize = () => {
+        if (chartRef.current && chartContainerRef.current) {
+          const width = chartContainerRef.current.clientWidth || 600;
+          chartRef.current.resize(width, 400);
+          console.log('DepthChart.js: Resized to width:', width);
         }
       };
-      window.addEventListener('resize', this.resizeHandler);
+      window.addEventListener('resize', handleResize);
 
-      // Force canvas visibility
-      const canvas = container.querySelector('canvas');
-      if (canvas) {
-        canvas.style.display = 'block';
-        canvas.style.width = '100%';
-        canvas.style.height = '100%';
-        canvas.style.backgroundColor = '#1a1a1a';
-        console.log('Canvas styles applied:', canvas.style.cssText);
-      } else {
-        console.warn('No canvas found in chart container');
-      }
-
-      setDepthChartError('');
-      console.log('Depth Chart rendered successfully');
+      return () => {
+        window.removeEventListener('resize', handleResize);
+        if (chartRef.current) {
+          chartRef.current.remove();
+          chartRef.current = null;
+          bidsSeriesRef.current = null;
+          asksSeriesRef.current = null;
+          console.log('DepthChart.js: Depth chart cleaned up');
+        }
+      };
     } catch (error) {
-      console.error('Depth Chart rendering error:', error);
-      setDepthChartError(`Failed to render chart: ${error.message}`);
+      console.error('DepthChart.js: Depth Chart rendering error:', error);
     }
-  }
+  }, [data, asset]); // Add asset to dependencies
 
-  render() {
-    const { orderBook, depthChartError } = this.props;
-    return (
-      <ErrorBoundary>
-        {depthChartError && <p className="text-danger">{depthChartError}</p>}
-        {orderBook.bids.length === 0 || orderBook.asks.length === 0 ? (
-          <p>Loading depth chart...</p>
-        ) : (
-          <>
-            <div
-              ref={this.chartContainerRef}
-              className="chart-container"
-              style={{ minHeight: '400px', minWidth: '100%' }}
-            />
-            {depthChartError && (
-              <table className="table table-dark mt-3">
-                <thead>
-                  <tr>
-                    <th>Bid Price (USD)</th>
-                    <th>Bid Amount</th>
-                    <th>Ask Price (USD)</th>
-                    <th>Ask Amount</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {orderBook.bids.slice(0, 5).map((bid, index) => (
-                    <tr key={`fallback-${index}`}>
-                      <td className="text-success">{bid.price}</td>
-                      <td>{bid.amount}</td>
-                      <td className="text-danger">{orderBook.asks[index]?.price || 'N/A'}</td>
-                      <td>{orderBook.asks[index]?.amount || 'N/A'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </>
-        )}
-      </ErrorBoundary>
-    );
-  }
-}
+  return (
+    <div
+      ref={chartContainerRef}
+      className="depth-chart-container"
+      style={{ width: '100%', height: '400px', backgroundColor: '#1a1a1a' }}
+    />
+  );
+};
 
 export default DepthChart;

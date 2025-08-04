@@ -1,21 +1,55 @@
 const axios = require('axios');
-const cache = require('memory-cache');
+const admin = require('firebase-admin');
 
-const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
-const MAX_RETRIES = 3;
-const RETRY_DELAY = 5000; // 5 seconds
-const COINGECKO_API_KEY = process.env.COINGECKO_API_KEY;
-const VALID_ASSETS = ['bitcoin', 'ethereum', 'litecoin', 'ripple', 'cardano', 'solana'];
-const ASSET_MAP = {
+// Map app asset names to CoinGecko IDs
+const assetMap = {
   bitcoin: 'bitcoin',
   ethereum: 'ethereum',
-  litecoin: 'litecoin',
-  ripple: 'xrp',
-  cardano: 'ada',
+  litecoin: 'lite-coin',
+  ripple: 'ripple',
+  cardano: 'cardano',
   solana: 'solana',
 };
 
-const fetchWithRetry = async (url, options = {}, retries = MAX_RETRIES, delay = RETRY_DELAY) => {
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    }),
+  });
+  console.log('Firebase Admin initialized successfully');
+}
+
+// Asset-specific base prices for mock data
+const basePrices = {
+  bitcoin: 114000,
+  ethereum: 3500,
+  'lite-coin': 100,
+  ripple: 3,
+  cardano: 0.73,
+  solana: 160,
+};
+
+// Generate mock OHLC data
+const generateMockOhlc = (asset, days) => {
+  const entries = days <= 7 ? 42 : days <= 14 ? 84 : days <= 30 ? 180 : 360; // Adjust entries based on days
+  const now = Date.now();
+  const basePrice = basePrices[asset] || 100; // Fallback price
+  const variationFactor = basePrice < 10 ? 0.05 : 0.02; // 5% for low-priced, 2% for others
+  return Array.from({ length: entries }, (_, i) => {
+    const time = now - (entries - i - 1) * 4 * 60 * 60 * 1000; // 4-hour intervals
+    const variation = (Math.random() - 0.5) * basePrice * variationFactor;
+    const open = parseFloat((basePrice + variation).toFixed(basePrice < 10 ? 4 : 2));
+    const high = parseFloat((open * (1 + Math.random() * variationFactor)).toFixed(basePrice < 10 ? 4 : 2));
+    const low = parseFloat((open * (1 - Math.random() * variationFactor)).toFixed(basePrice < 10 ? 4 : 2));
+    const close = parseFloat((open + (Math.random() - 0.5) * basePrice * variationFactor * 0.5).toFixed(basePrice < 10 ? 4 : 2));
+    return [time, open, high, low, close];
+  });
+};
+
+const fetchWithRetry = async (url, options = {}, retries = 3, delay = 10000) => {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       console.log(`Fetching ${url} (attempt ${attempt}/${retries})`);
@@ -23,7 +57,7 @@ const fetchWithRetry = async (url, options = {}, retries = MAX_RETRIES, delay = 
         ...options,
         headers: {
           ...options.headers,
-          'x-cg-api-key': COINGECKO_API_KEY,
+          'x-cg-api-key': process.env.COINGECKO_API_KEY || '',
         },
         timeout: 15000,
       });
@@ -34,11 +68,9 @@ const fetchWithRetry = async (url, options = {}, retries = MAX_RETRIES, delay = 
         message: error.message,
         status: error.response?.status,
       });
-      if (error.response?.status === 429) {
+      if (error.response?.status === 429 && attempt < retries) {
         console.error('CoinGecko rate limit exceeded. Waiting before retry.');
-      }
-      if (attempt < retries) {
-        await new Promise((resolve) => setTimeout(resolve, delay * Math.pow(2, attempt - 1)));
+        await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, attempt - 1)));
       } else {
         throw error;
       }
@@ -47,41 +79,54 @@ const fetchWithRetry = async (url, options = {}, retries = MAX_RETRIES, delay = 
 };
 
 module.exports = async (req, res) => {
-  const { asset, days } = req.params;
-  if (!VALID_ASSETS.includes(asset)) {
-    console.error(`Invalid asset: ${asset}`);
-    return res.status(400).json({ error: `Invalid asset: ${asset}. Valid assets: ${VALID_ASSETS.join(', ')}` });
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization');
+
+  const { asset, days } = req.query;
+  if (!asset || !days) {
+    console.error('Missing asset or days in query:', { asset, days });
+    return res.status(400).json({ error: 'Asset and days are required' });
   }
-  const cacheKey = `ohlc_${asset}_${days}`;
-  const cachedData = cache.get(cacheKey);
-  if (cachedData) {
-    console.log(`Serving ${days}-day OHLC for ${asset} from cache: ${cachedData.length || 0} points`);
-    return res.json(cachedData);
+
+  const coingeckoAssetId = assetMap[asset.toLowerCase()];
+  if (!coingeckoAssetId) {
+    console.error(`Invalid asset: ${asset}`);
+    return res.status(400).json({ error: `Invalid asset: ${asset}` });
+  }
+
+  const token = req.headers.authorization?.split('Bearer ')[1];
+  if (!token) {
+    console.error('No authorization token provided');
+    return res.status(401).json({ error: 'Unauthorized: No token provided' });
+  }
+  try {
+    await admin.auth().verifyIdToken(token);
+    console.log('Token verified successfully');
+  } catch (error) {
+    console.error('Invalid token:', error.message);
+    return res.status(401).json({ error: 'Unauthorized: Invalid token' });
   }
 
   try {
-    console.log(`Fetching ${days}-day OHLC for ${asset} from CoinGecko`);
-    const coingeckoAsset = ASSET_MAP[asset] || asset;
-    const url = `https://api.coingecko.com/api/v3/coins/${coingeckoAsset}/ohlc?vs_currency=usd&days=${days}&precision=2`;
-    const response = await fetchWithRetry(url);
-    if (!Array.isArray(response)) {
-      console.error('Invalid OHLC response format:', JSON.stringify(response, null, 2));
-      throw new Error('Invalid OHLC response format: array expected');
+    if (!process.env.COINGECKO_API_KEY) {
+      console.warn('COINGECKO_API_KEY not set, using mock data');
+      const mockData = generateMockOhlc(coingeckoAssetId, Number(days));
+      console.log(`Returning mock OHLC data for ${asset}: ${mockData.length} entries`);
+      return res.json(mockData);
     }
-    console.log(`Fetched OHLC for ${asset}: ${response.length} data points`);
-    cache.put(cacheKey, response, CACHE_DURATION);
+
+    console.log(`Fetching OHLC data for ${coingeckoAssetId} (${days} days)`);
+    const response = await fetchWithRetry(
+      `https://api.coingecko.com/api/v3/coins/${coingeckoAssetId}/ohlc?vs_currency=usd&days=${days}`
+    );
+    console.log(`Fetched OHLC data for ${coingeckoAssetId}: ${response.length} entries`);
     res.json(response);
   } catch (error) {
-    console.error(`OHLC fetch error for ${asset}:`, { message: error.message, status: error.response?.status });
-    const fallbackData = Array.from({ length: 168 }, (_, i) => [
-      Date.now() - (168 - i) * 60 * 60 * 1000,
-      10000 + Math.random() * 1000,
-      10000 + Math.random() * 1100,
-      10000 + Math.random() * 900,
-      10000 + Math.random() * 1000,
-    ]);
-    console.log(`Serving fallback OHLC data for ${asset}: ${fallbackData.length} points`);
-    cache.put(cacheKey, fallbackData, CACHE_DURATION);
-    res.json(fallbackData);
+    console.error(`Error fetching OHLC data for ${coingeckoAssetId}:`, error.message);
+    console.warn('Falling back to mock OHLC data');
+    const mockData = generateMockOhlc(coingeckoAssetId, Number(days));
+    console.log(`Returning mock OHLC data for ${asset}: ${mockData.length} entries`);
+    res.json(mockData);
   }
 };

@@ -1,3 +1,7 @@
-node_modules
+node_modules/
 .env 
 .env 
+.vercel/
+dist/
+bidance-firebase-adminsdk*.json
+build/

@@ -1,3 +1,4 @@
+// File: src/App.js
 import React, { useState, useEffect, useCallback } from 'react';
 import { auth } from './firebase';
 import axios from 'axios';
@@ -52,24 +53,23 @@ const App = () => {
   const fetchData = useCallback(async () => {
     if (!user) return;
     const token = await user.getIdToken();
+    const apiBaseUrl = window.location.origin; // Dynamic base URL for local and Vercel
     try {
       console.log('App.js: Fetching data for', asset);
       const [priceResponse, ohlcResponse, orderBookResponse] = await Promise.all([
-        axios.get('http://localhost:3000/api/price', {
+        axios.get(`${apiBaseUrl}/api/price`, {
           headers: { Authorization: `Bearer ${token}` },
         }).catch((err) => {
           console.error('App.js: Price fetch error:', err.message);
           throw err;
         }),
-        axios.get('http://localhost:3000/api/ohlc', {
-          params: { asset, days },
+        axios.get(`${apiBaseUrl}/api/ohlc/${asset}/${days}`, {
           headers: { Authorization: `Bearer ${token}` },
         }).catch((err) => {
           console.error('App.js: OHLC fetch error for', asset, ':', err.message);
           throw err;
         }),
-        axios.get('http://localhost:3000/api/orderbook', {
-          params: { asset },
+        axios.get(`${apiBaseUrl}/api/orderbook/${asset}`, {
           headers: { Authorization: `Bearer ${token}` },
         }).catch((err) => {
           console.error('App.js: Order book fetch error for', asset, ':', err.message);
@@ -154,7 +154,7 @@ const App = () => {
     try {
       const token = await user.getIdToken();
       const response = await axios.post(
-        'http://localhost:3000/api/kyc',
+        `${window.location.origin}/api/kyc`,
         kycData,
         {
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -180,7 +180,7 @@ const App = () => {
   const clearCache = async () => {
     try {
       const token = await user.getIdToken();
-      await axios.get('http://localhost:3000/api/clear-cache', {
+      await axios.get(`${window.location.origin}/api/clear-cache`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       console.log('App.js: Cache cleared');

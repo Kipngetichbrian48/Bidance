@@ -1,109 +1,80 @@
 // File: api/ohlc/[asset]/[days].js
+import { getAuth } from 'firebase-admin/auth';
+import { initializeApp, cert } from 'firebase-admin/app';
 import axios from 'axios';
 import cache from 'memory-cache';
-import { initializeApp, cert } from 'firebase-admin/app';
-import { getAuth } from 'firebase-admin/auth';
 
-if (!cache.get('firebase_initialized')) {
-  initializeApp({
-    credential: cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-    }),
-  });
-  cache.put('firebase_initialized', true);
-  console.log('Firebase Admin initialized successfully');
-}
+// Initialize Firebase Admin SDK
+const firebaseConfig = {
+  credential: cert({
+    projectId: process.env.FIREBASE_PROJECT_ID,
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+  }),
+};
 
-async function fetchOhlcData(asset, days, headers, maxRetries) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    console.log(`Fetching OHLC data for ${asset} (${days} days), attempt ${attempt}/${maxRetries}`);
-    try {
-      const response = await axios.get(
-        `https://api.coingecko.com/api/v3/coins/${asset}/ohlc?vs_currency=usd&days=${days}`,
-        { headers }
-      );
-      const ohlcData = response.data;
-      console.log(`Fetched OHLC data for ${asset}: ${ohlcData.length} entries`);
-      return ohlcData;
-    } catch (error) {
-      console.error(
-        `Fetch error for https://api.coingecko.com/api/v3/coins/${asset}/ohlc?vs_currency=usd&days=${days} (attempt ${attempt}/${maxRetries}):`,
-        { message: error.message, status: error.response?.status }
-      );
-      if (attempt === maxRetries || error.response?.status !== 429) {
-        throw error;
-      }
-      console.log('CoinGecko rate limit exceeded. Waiting before retry.');
-      await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
-    }
+try {
+  initializeApp(firebaseConfig);
+} catch (error) {
+  if (!/already exists/.test(error.message)) {
+    console.error('Firebase initialization error:', error.message);
   }
-  return null; // Fallback if all retries fail
 }
 
 export default async function handler(req, res) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
   const { asset, days } = req.query;
 
-  // Validate asset and days
-  const validAssets = ['bitcoin', 'ethereum', 'litecoin', 'ripple', 'cardano', 'solana'];
-  const validDays = ['7', '14', '30', '90'];
-  if (!validAssets.includes(asset)) {
-    return res.status(400).json({ error: 'Invalid asset' });
+  // Validate query parameters
+  if (!asset || !days) {
+    return res.status(400).json({ error: 'Asset and days are required' });
   }
-  if (!validDays.includes(days)) {
-    return res.status(400).json({ error: 'Invalid days parameter' });
+
+  // Validate authentication
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized: Missing or invalid token' });
   }
+
+  const token = authHeader.split('Bearer ')[1];
+  try {
+    await getAuth().verifyIdToken(token);
+  } catch (error) {
+    console.error('Token verification error:', error.message);
+    return res.status(401).json({ error: 'Unauthorized: Invalid token' });
+  }
+
+  // Mock OHLC data (fallback for testing)
+  const mockOhlcData = [
+    [1697059200000, 30000, 31000, 29500, 30500],
+    [1697145600000, 30500, 31500, 30000, 31000],
+    // Add more mock data as needed
+  ];
 
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'Unauthorized: Missing or invalid token' });
-    }
-
-    const token = authHeader.split('Bearer ')[1];
-    await getAuth().verifyIdToken(token);
-    console.log('Token verified successfully');
-
+    // Check cache
     const cacheKey = `ohlc_${asset}_${days}`;
     const cachedData = cache.get(cacheKey);
     if (cachedData) {
+      console.log('Returning cached OHLC data for', asset);
       return res.status(200).json(cachedData);
     }
 
+    // Fetch from CoinGecko (replace with real API call if needed)
     const apiKey = process.env.COINGECKO_API_KEY;
-    const headers = apiKey ? { 'x-cg-api-key': apiKey } : {};
-    const maxRetries = 3;
+    const response = await axios.get(
+      `https://api.coingecko.com/api/v3/coins/${asset}/ohlc?vs_currency=usd&days=${days}`,
+      {
+        headers: { 'x-cg-pro-api-key': apiKey },
+      }
+    );
 
-    let ohlcData = await fetchOhlcData(asset, days, headers, maxRetries);
-
-    if (!ohlcData) {
-      console.log(`Falling back to mock OHLC data for ${asset}`);
-      const now = Date.now();
-      const interval = 4 * 60 * 60 * 1000; // 4 hours
-      const mockPrice = asset === 'litecoin' ? 80 : asset === 'solana' ? 150 : 100; // Asset-specific mock price
-      ohlcData = Array.from({ length: 42 }, (_, i) => {
-        const time = now - (41 - i) * interval;
-        const basePrice = mockPrice * (1 + (Math.random() - 0.5) / 10);
-        return [
-          time,
-          basePrice,
-          basePrice * 1.02,
-          basePrice * 0.98,
-          basePrice * (1 + (Math.random() - 0.5) / 20),
-        ];
-      });
-      console.log(`Returning mock OHLC data for ${asset}: ${ohlcData.length} entries`);
-    }
-
-    cache.put(cacheKey, ohlcData, 15 * 60 * 1000); // 15-minute cache
-    res.status(200).json(ohlcData);
+    const ohlcData = response.data;
+    cache.put(cacheKey, ohlcData, 5 * 60 * 1000); // Cache for 5 minutes
+    console.log('Fetched OHLC data for', asset);
+    return res.status(200).json(ohlcData);
   } catch (error) {
-    console.error(`Error fetching OHLC data for ${asset}:`, error.message);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('OHLC fetch error:', error.message);
+    // Return mock data on error
+    return res.status(200).json(mockOhlcData);
   }
 }

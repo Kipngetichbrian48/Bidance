@@ -1,105 +1,83 @@
 // File: api/orderbook/[asset].js
+import { getAuth } from 'firebase-admin/auth';
+import { initializeApp, cert } from 'firebase-admin/app';
 import axios from 'axios';
 import cache from 'memory-cache';
-import { initializeApp, cert } from 'firebase-admin/app';
-import { getAuth } from 'firebase-admin/auth';
 
-if (!cache.get('firebase_initialized')) {
-  initializeApp({
-    credential: cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-    }),
-  });
-  cache.put('firebase_initialized', true);
-  console.log('Firebase Admin initialized successfully');
-}
+// Initialize Firebase Admin SDK
+const firebaseConfig = {
+  credential: cert({
+    projectId: process.env.FIREBASE_PROJECT_ID,
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+  }),
+};
 
-async function fetchPriceData(asset, headers, maxRetries) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    console.log(`Fetching price for ${asset} to generate mock order book, attempt ${attempt}/${maxRetries}`);
-    try {
-      const priceResponse = await axios.get(
-        `https://api.coingecko.com/api/v3/simple/price?ids=${asset}&vs_currencies=usd`,
-        { headers }
-      );
-      const currentPrice = priceResponse.data[asset]?.usd;
-      if (!currentPrice) {
-        throw new Error('Invalid price data');
-      }
-      console.log(`Fetched price for ${asset}: ${currentPrice}`);
-      return currentPrice;
-    } catch (error) {
-      console.error(
-        `Fetch error for https://api.coingecko.com/api/v3/simple/price?ids=${asset}&vs_currencies=usd (attempt ${attempt}/${maxRetries}):`,
-        { message: error.message, status: error.response?.status }
-      );
-      if (attempt === maxRetries || error.response?.status !== 429) {
-        throw error;
-      }
-      console.log('CoinGecko rate limit exceeded. Waiting before retry.');
-      await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
-    }
+try {
+  initializeApp(firebaseConfig);
+} catch (error) {
+  if (!/already exists/.test(error.message)) {
+    console.error('Firebase initialization error:', error.message);
   }
-  return null; // Fallback if all retries fail
 }
 
 export default async function handler(req, res) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
   const { asset } = req.query;
 
-  // Validate asset
-  const validAssets = ['bitcoin', 'ethereum', 'litecoin', 'ripple', 'cardano', 'solana'];
-  if (!validAssets.includes(asset)) {
-    return res.status(400).json({ error: 'Invalid asset' });
+  // Validate query parameters
+  if (!asset) {
+    return res.status(400).json({ error: 'Asset is required' });
   }
 
+  // Validate authentication
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized: Missing or invalid token' });
+  }
+
+  const token = authHeader.split('Bearer ')[1];
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'Unauthorized: Missing or invalid token' });
-    }
-
-    const token = authHeader.split('Bearer ')[1];
     await getAuth().verifyIdToken(token);
-    console.log('Token verified successfully');
+  } catch (error) {
+    console.error('Token verification error:', error.message);
+    return res.status(401).json({ error: 'Unauthorized: Invalid token' });
+  }
 
+  // Mock order book data (fallback for testing)
+  const mockOrderBook = {
+    bids: [[29900, 0.5], [29800, 1.0]],
+    asks: [[30000, 0.7], [30100, 0.3]],
+  };
+
+  try {
+    // Check cache
     const cacheKey = `orderbook_${asset}`;
     const cachedData = cache.get(cacheKey);
     if (cachedData) {
+      console.log('Returning cached order book for', asset);
       return res.status(200).json(cachedData);
     }
 
+    // Fetch from CoinGecko or exchange API (replace with real API call if needed)
     const apiKey = process.env.COINGECKO_API_KEY;
-    const headers = apiKey ? { 'x-cg-api-key': apiKey } : {};
-    const maxRetries = 3;
+    // Example: Replace with actual order book API if available
+    const response = await axios.get(
+      `https://api.coingecko.com/api/v3/coins/${asset}/tickers`,
+      {
+        headers: { 'x-cg-pro-api-key': apiKey },
+      }
+    );
 
-    const currentPrice = await fetchPriceData(asset, headers, maxRetries);
-
-    const mockOrderBook = {
-      bids: Array.from({ length: 10 }, (_, i) => [
-        (currentPrice || 100) * (1 - (i + 1) / 100),
-        10 + Math.random() * 10,
-      ]),
-      asks: Array.from({ length: 10 }, (_, i) => [
-        (currentPrice || 100) * (1 + (i + 1) / 100),
-        10 + Math.random() * 10,
-      ]),
+    const orderBook = {
+      bids: response.data.tickers.slice(0, 5).map((t) => [t.last, t.volume]),
+      asks: response.data.tickers.slice(5, 10).map((t) => [t.last * 1.01, t.volume]),
     };
-
-    if (!currentPrice) {
-      console.log(`Falling back to mock order book for ${asset}`);
-    }
-
-    cache.put(cacheKey, mockOrderBook, 15 * 60 * 1000); // 15-minute cache
-    console.log(`Generated mock order book for ${asset}: ${mockOrderBook.bids.length} bids, ${mockOrderBook.asks.length} asks`);
-    res.status(200).json(mockOrderBook);
+    cache.put(cacheKey, orderBook, 5 * 60 * 1000); // Cache for 5 minutes
+    console.log('Fetched order book for', asset);
+    return res.status(200).json(orderBook);
   } catch (error) {
-    console.error('Error generating order book:', error.message);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('Order book fetch error:', error.message);
+    // Return mock data on error
+    return res.status(200).json(mockOrderBook);
   }
 }

@@ -1,6 +1,7 @@
 // File: src/App.js
 import React, { useState, useEffect, useCallback } from 'react';
 import { auth } from './firebase';
+import { signInWithEmailAndPassword, signOut } from 'firebase/auth'; // Add modular imports
 import axios from 'axios';
 import { Container, Nav, Navbar, NavDropdown, Form, Button, Alert } from 'react-bootstrap';
 import Chart from './chart'; // Case-sensitive
@@ -121,8 +122,8 @@ const App = () => {
   const handleLogin = async (e) => {
     e.preventDefault();
     try {
-      await auth.signInWithEmailAndPassword(email, password);
-      console.log('App.js: User logged in:', email);
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      console.log('App.js: User logged in:', userCredential.user.email);
       setError('');
       setSuccess('Login successful!');
     } catch (err) {
@@ -134,7 +135,7 @@ const App = () => {
 
   const handleSignOut = async () => {
     try {
-      await auth.signOut();
+      await signOut(auth);
       console.log('App.js: User signed out');
       setError('');
       setSuccess('Signed out successfully!');

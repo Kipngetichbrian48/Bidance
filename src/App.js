@@ -111,7 +111,7 @@ const App = () => {
   const handleAssetChange = debounce((newAsset) => {
     console.log('App.js: Changing asset to:', newAsset);
     setAsset(newAsset);
-  }, 500);
+  }, 1000);
 
   const handleDaysChange = (newDays) => {
     console.log('App.js: Changing days to:', newDays);

@@ -1,7 +1,12 @@
 // File: src/App.js
 import React, { useState, useEffect, useCallback } from 'react';
 import { auth } from './firebase';
-import { signInWithEmailAndPassword, signOut } from 'firebase/auth'; // Add modular imports
+import {
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
+  signOut,
+} from 'firebase/auth';
 import axios from 'axios';
 import { Container, Nav, Navbar, NavDropdown, Form, Button, Alert } from 'react-bootstrap';
 import Chart from './chart'; // Case-sensitive
@@ -24,6 +29,8 @@ const App = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [kycStatus, setKycStatus] = useState('pending');
+  const [isSignUp, setIsSignUp] = useState(false); // Toggle between login and sign-up
+  const [resetEmail, setResetEmail] = useState(''); // For forgot password
 
   // Check auth state and KYC status
   useEffect(() => {
@@ -129,6 +136,41 @@ const App = () => {
     } catch (err) {
       console.error('App.js: Login error:', err.message);
       setError('Login failed: ' + err.message);
+      setSuccess('');
+    }
+  };
+
+  const handleSignUp = async (e) => {
+    e.preventDefault();
+    try {
+      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      console.log('App.js: User signed up:', userCredential.user.email);
+      setError('');
+      setSuccess('Account created! Please log in.');
+      setIsSignUp(false); // Switch back to login
+    } catch (err) {
+      console.error('App.js: Sign-up error:', err.message);
+      setError('Sign-up failed: ' + err.message);
+      setSuccess('');
+    }
+  };
+
+  const handleForgotPassword = async (e) => {
+    if (e) e.preventDefault(); // Only call preventDefault if event exists
+    const emailToReset = resetEmail || email; // Use resetEmail if set, otherwise use email
+    if (!emailToReset) {
+      setError('Please enter a valid email address.');
+      return;
+    }
+    try {
+      await sendPasswordResetEmail(auth, emailToReset);
+      console.log('App.js: Password reset email sent to:', emailToReset);
+      setError('');
+      setSuccess('Password reset email sent! Check your inbox.');
+      setResetEmail(''); // Clear input
+    } catch (err) {
+      console.error('App.js: Forgot password error:', err.message);
+      setError('Failed to send reset email: ' + err.message);
       setSuccess('');
     }
   };
@@ -336,7 +378,7 @@ const App = () => {
 
   const AnalyticsTab = () => (
     <div className="analytics-tab">
-      <h3>Analytics</h3>
+      <h2>Analytics</h2>
       <PieChart data={prices} />
     </div>
   );
@@ -344,8 +386,8 @@ const App = () => {
   if (!user) {
     return (
       <Container className="login-prompt">
-        <h2>Login to Bidance</h2>
-        <Form onSubmit={handleLogin} className="login-form">
+        <h2>{isSignUp ? 'Sign Up' : 'Login to Bidance'}</h2>
+        <Form onSubmit={isSignUp ? handleSignUp : handleLogin} className="login-form">
           <Form.Group className="mb-3">
             <Form.Label>Email</Form.Label>
             <Form.Control
@@ -353,6 +395,7 @@ const App = () => {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="Enter email"
+              required
             />
           </Form.Group>
           <Form.Group className="mb-3">
@@ -362,11 +405,45 @@ const App = () => {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="Enter password"
+              required
             />
           </Form.Group>
           <Button variant="primary" type="submit">
-            Login
+            {isSignUp ? 'Sign Up' : 'Login'}
           </Button>
+          {!isSignUp && (
+            <Form.Text className="text-muted mt-2">
+              <button
+                onClick={(e) => {
+                  e.preventDefault();
+                  const emailToReset = email.trim(); // Use current email directly
+                  if (!emailToReset) {
+                    setError('Please enter a valid email address.');
+                    return;
+                  }
+                  if (window.confirm(`Send password reset email to ${emailToReset}?`)) {
+                    handleForgotPassword(e);
+                  }
+                }}
+                className="link-button"
+              >
+                Forgot Password?
+              </button>
+            </Form.Text>
+          )}
+          <p className="mt-2">
+            {isSignUp ? 'Already have an account?' : 'No account?'}{' '}
+            <button
+              onClick={() => {
+                setIsSignUp(!isSignUp);
+                setError('');
+                setSuccess('');
+              }}
+              className="link-button"
+            >
+              {isSignUp ? 'Login' : 'Sign Up'}
+            </button>
+          </p>
           {error && <Alert variant="danger" className="mt-3">{error}</Alert>}
           {success && <Alert variant="success" className="mt-3">{success}</Alert>}
         </Form>

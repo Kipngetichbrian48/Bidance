@@ -343,6 +343,22 @@ body {
   border-color: var(--binance-border);
 }
 
+/* Link Button Styling */
+.link-button {
+  border: none;
+  background: none;
+  color: var(--binance-accent); /* Matches theme accent */
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+  font-size: inherit;
+}
+
+.link-button:hover {
+  color: #d4a017; /* Darker accent on hover */
+  text-decoration: none; /* Optional: Remove underline on hover */
+}
+
 /* Responsive Adjustments */
 @media (max-width: 768px) {
   .app-container {
